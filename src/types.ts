@@ -36,7 +36,7 @@ export interface AddonFile {
   filename: string;
   content: string;
   description: string;
-  language: 'gdscript' | 'config' | 'markdown' | 'scene';
+  language: 'gdscript' | 'config' | 'markdown' | 'scene' | 'python' | 'txt';
 }
 
 export interface TemplatePrompt {

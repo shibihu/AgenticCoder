@@ -462,5 +462,141 @@ An in-editor agentic AI game development assistant for Godot Engine!
 - **Shader Lab**: Generates CanvasItem, Spatial, and Particle shaders (.gdshader).
 - **1-Click Script Insertion**: Seamlessly inject generated code into the Godot Script Editor.
 `
+  },
+  {
+    path: 'libraries.txt',
+    filename: 'libraries.txt',
+    language: 'config',
+    description: 'Complete list of Node.js and Python packages for hosting the AI bridge locally on http://localhost:3000.',
+    content: `# ==============================================================================
+# Godot AI Copilot - Local Hosting Libraries & Dependencies
+# ==============================================================================
+# You can host this AI Copilot server locally on http://localhost:3000
+# using either Node.js (Option A) or Python (Option B).
+
+# OPTION A: Node.js / TypeScript Local Host (Full Web + Addon Bridge)
+# Quick start: npm install && npm run dev
+@google/genai>=2.4.0
+express>=4.21.2
+dotenv>=17.2.3
+jszip>=3.10.1
+lucide-react>=0.546.0
+motion>=12.23.24
+react>=19.0.1
+react-dom>=19.0.1
+vite>=6.2.3
+tsx>=4.21.0
+typescript>=5.8.2
+esbuild>=0.25.0
+@types/express>=4.17.21
+@types/node>=22.14.0
+@tailwindcss/vite>=4.1.14
+tailwindcss>=4.1.14
+
+# OPTION B: Python Standalone Local Bridge (Flask / FastAPI)
+# Quick start: pip install -r requirements.txt && python local_server.py
+flask>=3.0.0
+flask-cors>=4.0.0
+google-genai>=0.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+`
+  },
+  {
+    path: 'requirements.txt',
+    filename: 'requirements.txt',
+    language: 'config',
+    description: 'Python pip requirements file for running local_server.py on localhost:3000.',
+    content: `flask>=3.0.0
+flask-cors>=4.0.0
+google-genai>=0.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+`
+  },
+  {
+    path: 'local_server.py',
+    filename: 'local_server.py',
+    language: 'python',
+    description: 'Standalone 1-file Python Flask bridge server for hosting on http://localhost:3000 with Google GenAI.',
+    content: `"""
+Godot AI Copilot - Standalone Python Local Host Server.
+Runs on http://localhost:3000 to bridge Godot Editor requests with Gemini AI.
+
+Usage:
+    pip install -r requirements.txt
+    export GEMINI_API_KEY="your-gemini-api-key"
+    python local_server.py
+"""
+
+from __future__ import annotations
+import os
+import sys
+from typing import Any, Dict
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from google import genai
+
+load_dotenv()
+app = Flask(__name__)
+CORS(app)
+PORT = 3000
+HOST = "0.0.0.0"
+
+SYSTEM_INSTRUCTION = """You are Godot AI Copilot specialized in Godot 4.x (and 3.x when requested).
+Write clean, typed GDScript 2.0 (@export, @onready, move_and_slide(), Callable signals, await)."""
+
+def get_ai_client() -> genai.Client:
+    return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+@app.route("/api/health", methods=["GET"])
+def health() -> Any:
+    return jsonify({"status": "ok", "service": "Godot AI Copilot Python Local Bridge", "port": PORT})
+
+@app.route("/api/godot/prompt", methods=["POST"])
+def handle_godot_prompt() -> Any:
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    prompt = data.get("prompt", "").strip()
+    godot_version = data.get("godot_version", "4.x")
+    current_code = data.get("current_code", "")
+
+    if not prompt:
+        return jsonify({"error": "Prompt cannot be empty"}), 400
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return jsonify({
+            "reply": "# Please set GEMINI_API_KEY in your environment to get AI responses.",
+            "code": "func _ready():\n    print('Hello from local Godot Copilot!')"
+        })
+
+    try:
+        client = get_ai_client()
+        content = f"Godot Target Version: {godot_version}\\n\\nUser Request: {prompt}"
+        if current_code:
+            content += f"\\n\\nActive Script:\\n\`\`\`gdscript\\n{current_code}\\n\`\`\`"
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=content,
+            config={"system_instruction": SYSTEM_INSTRUCTION, "temperature": 0.3}
+        )
+        reply_text = response.text or ""
+        code = ""
+        if "\`\`\`gdscript" in reply_text:
+            code = reply_text.split("\`\`\`gdscript")[1].split("\`\`\`")[0].strip()
+        elif "\`\`\`" in reply_text:
+            code = reply_text.split("\`\`\`")[1].split("\`\`\`")[0].strip()
+
+        return jsonify({"reply": reply_text, "code": code})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+if __name__ == "__main__":
+    print(f"Godot AI Copilot running locally on http://localhost:{PORT}")
+    app.run(host=HOST, port=PORT, debug=True)
+`
   }
 ];
+

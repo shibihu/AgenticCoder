@@ -1,0 +1,44 @@
+# ==============================================================================
+# Godot AI Copilot - Local Hosting Libraries & Dependencies
+# ==============================================================================
+# You can host this AI Copilot server locally on http://localhost:3000
+# using either Node.js (Option A) or Python (Option B).
+
+# ------------------------------------------------------------------------------
+# OPTION A: Node.js / TypeScript Local Host (Full Web + Addon Bridge)
+# ------------------------------------------------------------------------------
+# Quick start:
+#   npm install
+#   npm run dev
+#
+# Direct NPM Packages:
+@google/genai>=2.4.0
+express>=4.21.2
+dotenv>=17.2.3
+jszip>=3.10.1
+lucide-react>=0.546.0
+motion>=12.23.24
+react>=19.0.1
+react-dom>=19.0.1
+vite>=6.2.3
+tsx>=4.21.0
+typescript>=5.8.2
+esbuild>=0.25.0
+@types/express>=4.17.21
+@types/node>=22.14.0
+@tailwindcss/vite>=4.1.14
+tailwindcss>=4.1.14
+
+# ------------------------------------------------------------------------------
+# OPTION B: Python Standalone Local Bridge (Flask / FastAPI)
+# ------------------------------------------------------------------------------
+# Quick start:
+#   pip install -r requirements.txt
+#   python local_server.py
+#
+# Python Pip Packages (see requirements.txt):
+flask>=3.0.0
+flask-cors>=4.0.0
+google-genai>=0.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
