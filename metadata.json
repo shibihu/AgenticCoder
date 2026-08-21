@@ -1,0 +1,6 @@
+{
+  "name": "Godot AI Copilot & Addon Hub",
+  "description": "Agentic AI assistant for Godot Engine game developers with downloadable Godot 4 editor plugin addon, live HTTP bridge, GDScript generator, node tree planner, and shader tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
