@@ -220,11 +220,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     : 'bg-zinc-900/90 text-zinc-200 border border-zinc-800 rounded-tl-none'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1.5 pb-1 border-b border-zinc-800/50 text-[11px] text-zinc-400">
-                  <span className="font-semibold text-zinc-300">
-                    {isUser ? 'You (Game Developer)' : `Godot AI Copilot (${godotVersion})`}
-                  </span>
-                  <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <div className="flex items-center justify-between mb-1.5 pb-1 border-b border-zinc-800/50 text-[11px] text-zinc-400 gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold text-zinc-300">
+                      {isUser ? 'You (Game Developer)' : `Godot AI Copilot (${godotVersion})`}
+                    </span>
+                    {!isUser && msg.providerUsed && (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 font-mono">
+                        {msg.providerUsed} {msg.modelUsed ? `• ${msg.modelUsed}` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <span className="shrink-0">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
                 <div className="text-zinc-200">
                   {renderMessageContent(msg.content)}

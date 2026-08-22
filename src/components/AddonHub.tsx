@@ -266,11 +266,12 @@ export const AddonHub: React.FC<AddonHubProps> = ({
             <div className="flex flex-wrap gap-1.5 pt-1">
               <span className="text-[11px] text-zinc-400 self-center mr-1">Quick Features:</span>
               {[
+                { label: '🛡️ Auto Collider Wrap', prompt: 'Make collision for Chest sprite node and wrap with StaticBody2D' },
                 { label: '🏗️ Scene Builder', prompt: 'Add CharacterBody2D Player with CollisionShape2D under root' },
+                { label: '🔄 Reparent & Clean', prompt: 'Reparent Enemy node under World and set position to [300, 200]' },
                 { label: '🤖 Fix Error', prompt: 'Analyze and fix KinematicBody2D move_and_slide error in active script' },
                 { label: '🎨 Apply Shader', prompt: 'Create stylized 2D water shader and apply to selected sprite' },
                 { label: '🗂️ Organize Assets', prompt: 'Organize all project assets into Textures, Audio, Shaders, Scripts folders' },
-                { label: '🧩 Multi-Script Context', prompt: 'Create InventoryManager.gd and ItemData.gd with signals and custom resource' },
               ].map((item, idx) => (
                 <button
                   key={idx}

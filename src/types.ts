@@ -1,5 +1,22 @@
 export type GodotVersion = '4.x' | '3.x';
 
+export type AIProvider = 
+  | 'auto' 
+  | 'gemini' 
+  | 'openrouter' 
+  | 'claude' 
+  | 'openai' 
+  | 'groq' 
+  | 'custom';
+
+export interface AIModelConfig {
+  provider: AIProvider;
+  model?: string;
+  apiKey?: string;
+  customEndpoint?: string;
+  temperature?: number;
+}
+
 export type CopilotMode = 
   | 'chat' 
   | 'addon-hub' 
@@ -13,6 +30,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  providerUsed?: string;
+  modelUsed?: string;
   codeBlocks?: {
     language: string;
     code: string;
@@ -54,6 +73,10 @@ export interface GodotBridgeRequest {
   context_code?: string;
   godot_version?: GodotVersion;
   node_context?: string;
+  provider?: AIProvider;
+  model?: string;
+  api_key?: string;
+  custom_endpoint?: string;
 }
 
 export interface GodotBridgeResponse {
@@ -62,5 +85,8 @@ export interface GodotBridgeResponse {
   codeLanguage?: string;
   filename?: string;
   nodeTree?: SceneNode[];
+  providerUsed?: string;
+  modelUsed?: string;
   error?: string;
 }
+

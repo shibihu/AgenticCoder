@@ -10,9 +10,11 @@ import {
   Workflow, 
   CheckCircle2, 
   ArrowRightLeft,
-  Flame
+  Flame,
+  Cpu,
+  Settings
 } from 'lucide-react';
-import { CopilotMode, GodotVersion } from '../types';
+import { CopilotMode, GodotVersion, AIModelConfig } from '../types';
 
 interface HeaderProps {
   currentMode: CopilotMode;
@@ -20,8 +22,10 @@ interface HeaderProps {
   godotVersion: GodotVersion;
   onSelectGodotVersion: (v: GodotVersion) => void;
   onOpenInstallModal: () => void;
+  onOpenSettingsModal: () => void;
   onDownloadAddonZip: () => void;
   isDownloadingZip?: boolean;
+  aiConfig: AIModelConfig;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -30,17 +34,40 @@ export const Header: React.FC<HeaderProps> = ({
   godotVersion,
   onSelectGodotVersion,
   onOpenInstallModal,
+  onOpenSettingsModal,
   onDownloadAddonZip,
   isDownloadingZip = false,
+  aiConfig,
 }) => {
   const navItems: { id: CopilotMode; label: string; icon: React.ReactNode }[] = [
     { id: 'chat', label: 'AI Copilot Chat', icon: <Bot className="w-4 h-4" /> },
-    { id: 'addon-hub', label: 'Godot Addon Hub', icon: <FolderCheck className="w-4 h-4" /> },
+    { id: 'addon-hub', label: 'Godot Addon Hub & Skill', icon: <FolderCheck className="w-4 h-4" /> },
     { id: 'script-generator', label: 'Script & Systems', icon: <Code2 className="w-4 h-4" /> },
     { id: 'node-architect', label: 'Scene Architect', icon: <Workflow className="w-4 h-4" /> },
     { id: 'shader-lab', label: 'Shader VFX Lab', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'godot3-to-4-converter', label: 'Godot 3 ➔ 4', icon: <ArrowRightLeft className="w-4 h-4" /> },
   ];
+
+  const getProviderLabel = () => {
+    switch (aiConfig.provider) {
+      case 'auto':
+        return '🤖 Auto Best Model';
+      case 'gemini':
+        return 'Google Gemini';
+      case 'openrouter':
+        return 'OpenRouter';
+      case 'claude':
+        return 'Claude 3.5';
+      case 'openai':
+        return 'OpenAI / GPT-4o';
+      case 'groq':
+        return 'Groq LPU';
+      case 'custom':
+        return 'Custom / Ollama';
+      default:
+        return 'Auto Model';
+    }
+  };
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/90 backdrop-blur-md sticky top-0 z-40">
@@ -59,16 +86,29 @@ export const Header: React.FC<HeaderProps> = ({
               <h1 className="font-extrabold text-sm sm:text-base text-zinc-100 tracking-tight flex items-center gap-1.5">
                 <span>Godot AI Copilot</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50 font-mono">
-                  v4.x ADDON
+                  PRO SKILL v4.2
                 </span>
               </h1>
             </div>
-            <p className="text-[11px] text-zinc-400 hidden sm:block">Agentic Game Dev Assistant & In-Editor Godot Addon Bridge</p>
+            <p className="text-[11px] text-zinc-400 hidden sm:block">Multi-Provider Agentic Game Dev Assistant & In-Editor Godot Addon</p>
           </div>
         </div>
 
-        {/* Right side controls: Version selector, Bridge status & Addon download */}
-        <div className="flex items-center space-x-2 sm:space-x-3 flex-wrap">
+        {/* Right side controls: Model/Provider selector, Version toggle, Bridge status & Addon download */}
+        <div className="flex items-center space-x-2 sm:space-x-2.5 flex-wrap">
+          {/* AI Provider / Model button */}
+          <button
+            onClick={onOpenSettingsModal}
+            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-700/80 transition-all shadow-sm group"
+            title="Configure AI Model & Provider (Gemini, OpenRouter, Claude, OpenAI, Groq, Ollama)"
+          >
+            <Cpu className="w-3.5 h-3.5 text-cyan-400 group-hover:rotate-45 transition-transform" />
+            <span className="font-semibold">{getProviderLabel()}</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+              Config
+            </span>
+          </button>
+
           {/* Godot version toggle */}
           <div className="flex items-center p-0.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs">
             <button
@@ -148,3 +188,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+

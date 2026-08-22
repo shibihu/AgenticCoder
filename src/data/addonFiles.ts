@@ -19,7 +19,7 @@ script="godot_ai_copilot.gd"
     path: 'addons/godot_ai_copilot/godot_ai_copilot.gd',
     filename: 'godot_ai_copilot.gd',
     language: 'gdscript',
-    description: 'Main EditorPlugin script with full Agentic Scene Builder, Error Fixer, Shader Applier, Asset Organizer, and File System IDE capabilities.',
+    description: 'Main EditorPlugin script with full Agentic Physics Body Wrapper, Scene Builder, Error Fixer, Shader Applier, Asset Organizer, and File System IDE capabilities.',
     content: `@tool
 extends EditorPlugin
 class_name GodotAICopilotPlugin
@@ -31,13 +31,13 @@ func _enter_tree() -> void:
 	dock_instance = DOCK_SCENE.instantiate()
 	dock_instance.set_editor_plugin(self)
 	add_control_to_bottom_panel(dock_instance, "AI Copilot")
-	print("[Godot AI Copilot] Plugin activated with full Agentic IDE capabilities (Scene Builder, Error Fixer, Shader Applier, Asset Organizer)!")
+	print("[Godot AI Copilot Pro] Plugin activated with full Agentic IDE capabilities (Physics Wrappers, Scene Builder, Error Fixer, Shader Studio)!")
 
 func _exit_tree() -> void:
 	if is_instance_valid(dock_instance):
 		remove_control_from_bottom_panel(dock_instance)
 		dock_instance.queue_free()
-	print("[Godot AI Copilot] Plugin unloaded.")
+	print("[Godot AI Copilot Pro] Plugin unloaded.")
 
 # Helper to get current active script editor content
 func get_active_script_code() -> String:
@@ -69,7 +69,7 @@ func insert_code_to_active_script(code_to_insert: String, replace_all: bool = fa
 		return true
 	return false
 
-# Inspect open scene hierarchy
+# Inspect open scene hierarchy with rich node properties (position, texture size, class)
 func get_scene_tree_summary() -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
 	if not root:
@@ -90,6 +90,21 @@ func _dump_node_tree(node: Node) -> Array[Dictionary]:
 		"script": node.get_script().resource_path if node.get_script() else "",
 		"children_count": node.get_child_count()
 	}
+	
+	if node is Node2D:
+		item["position"] = [snapped(node.position.x, 0.1), snapped(node.position.y, 0.1)]
+		item["global_position"] = [snapped(node.global_position.x, 0.1), snapped(node.global_position.y, 0.1)]
+	elif node is Control:
+		item["position"] = [snapped(node.position.x, 0.1), snapped(node.position.y, 0.1)]
+		item["size"] = [snapped(node.size.x, 0.1), snapped(node.size.y, 0.1)]
+	
+	if node is Sprite2D and (node as Sprite2D).texture:
+		var tex_size := (node as Sprite2D).texture.get_size()
+		item["texture"] = {
+			"path": (node as Sprite2D).texture.resource_path,
+			"size": [int(tex_size.x), int(tex_size.y)]
+		}
+	
 	result.append(item)
 	for child in node.get_children():
 		result.append_array(_dump_node_tree(child))
@@ -101,13 +116,17 @@ func get_selected_nodes_info() -> Array[Dictionary]:
 	var selected_nodes := selection.get_selected_nodes()
 	var out: Array[Dictionary] = []
 	for n in selected_nodes:
-		out.append({
+		var n_info := {
 			"name": n.name,
 			"type": n.get_class(),
 			"path": str(n.get_path()),
 			"is_canvas_item": n is CanvasItem,
 			"is_node3d": n is Node3D
-		})
+		}
+		if n is Node2D:
+			n_info["position"] = [n.position.x, n.position.y]
+			n_info["global_position"] = [n.global_position.x, n.global_position.y]
+		out.append(n_info)
 	return out
 
 # Scan all files in project res://
@@ -134,6 +153,40 @@ func _scan_dir_recursive(path: String, out_files: PackedStringArray, max_files: 
 				out_files.append(full_path)
 		file_name = dir.get_next()
 	dir.list_dir_end()
+
+# Helper to reliably find any node in the active scene tree by path, leaf name, or partial match
+func _find_target_node(scene_root: Node, identifier: String) -> Node:
+	if not scene_root or identifier.strip_edges().is_empty():
+		return scene_root
+	
+	var clean_id := identifier.strip_edges()
+	if clean_id == scene_root.name or clean_id == "/" or clean_id == "." or clean_id == "":
+		return scene_root
+	
+	# 1. Direct NodePath lookup
+	if scene_root.has_node(NodePath(clean_id)):
+		return scene_root.get_node(NodePath(clean_id))
+	
+	# 2. Try find_child exact
+	var by_name := scene_root.find_child(clean_id, true, false)
+	if by_name:
+		return by_name
+	
+	# 3. Try matching last component of a path (e.g. "Assets/Storages/Chest" -> "Chest")
+	var leaf_name := clean_id.get_file()
+	if not leaf_name.is_empty():
+		var by_leaf := scene_root.find_child(leaf_name, true, false)
+		if by_leaf:
+			return by_leaf
+	
+	# 4. Search all nodes for partial match or suffix match
+	var all_nodes := _dump_node_tree(scene_root)
+	for n_data in all_nodes:
+		var n_path: String = n_data.get("path", "")
+		if n_path.ends_with(clean_id) or clean_id.to_lower() in n_path.to_lower():
+			return scene_root.get_node_or_null(NodePath(n_path))
+			
+	return null
 
 # Apply shader directly onto selected node or specified node
 func apply_shader_to_node(shader_code: String, target_node: Node = null, save_path: String = "") -> Dictionary:
@@ -182,9 +235,193 @@ func apply_shader_to_node(shader_code: String, target_node: Node = null, save_pa
 func execute_agent_action(action: Dictionary) -> Dictionary:
 	var action_type: String = action.get("type", "")
 	var res := {"success": false, "message": ""}
+	var scene_root := EditorInterface.get_edited_scene_root()
 	
 	match action_type:
-		# 1. FILE OPERATIONS
+		# =========================================================================
+		# 1. ADVANCED PHYSICS BODY & COLLIDER AUTO-WRAPPER
+		# =========================================================================
+		"wrap_with_body", "attach_collision", "make_collision":
+			if not scene_root:
+				res.message = "No active scene open in Godot."
+				return res
+			
+			var target_id: String = action.get("target", action.get("node", ""))
+			var target_node := _find_target_node(scene_root, target_id)
+			if not target_node:
+				res.message = "Target node '" + target_id + "' not found in active scene."
+				return res
+			
+			var body_type: String = action.get("body_type", "StaticBody2D")
+			var shape_type: String = action.get("shape", "rectangle")
+			var custom_size: Array = action.get("size", [])
+			var original_parent := target_node.get_parent()
+			if not original_parent:
+				original_parent = scene_root
+			
+			var original_global_pos := Vector2.ZERO
+			if target_node is Node2D:
+				original_global_pos = (target_node as Node2D).global_position
+			
+			# Auto-calculate collision size from Sprite texture if available
+			var col_size := Vector2(32, 32)
+			if custom_size.size() >= 2:
+				col_size = Vector2(custom_size[0], custom_size[1])
+			elif target_node is Sprite2D and (target_node as Sprite2D).texture:
+				var t_size := (target_node as Sprite2D).texture.get_size()
+				var t_scale := (target_node as Sprite2D).scale
+				col_size = Vector2(abs(t_size.x * t_scale.x), abs(t_size.y * t_scale.y))
+			elif target_node is Control:
+				col_size = (target_node as Control).size
+			
+			# Create Physics Body Node (StaticBody2D, Area2D, CharacterBody2D, RigidBody2D)
+			var body_node: Node = null
+			if ClassDB.class_exists(body_type):
+				body_node = ClassDB.instantiate(body_type)
+			else:
+				body_node = StaticBody2D.new()
+			
+			var original_name := target_node.name
+			body_node.name = action.get("body_name", original_name + "_Body")
+			original_parent.add_child(body_node)
+			body_node.owner = scene_root
+			
+			if body_node is Node2D:
+				(body_node as Node2D).global_position = original_global_pos
+			
+			# Reparent target visual node under the new physics body
+			target_node.reparent(body_node, false)
+			if target_node is Node2D:
+				(target_node as Node2D).position = Vector2.ZERO
+			target_node.owner = scene_root
+			
+			# Create and attach CollisionShape2D
+			var col := CollisionShape2D.new()
+			col.name = "CollisionShape2D"
+			if shape_type == "circle":
+				var c := CircleShape2D.new()
+				c.radius = max(col_size.x, col_size.y) / 2.0
+				col.shape = c
+			elif shape_type == "capsule":
+				var cap := CapsuleShape2D.new()
+				cap.radius = min(col_size.x, col_size.y) / 2.0
+				cap.height = max(col_size.x, col_size.y)
+				col.shape = cap
+			else:
+				var rect := RectangleShape2D.new()
+				rect.size = col_size
+				col.shape = rect
+			
+			body_node.add_child(col)
+			col.owner = scene_root
+			
+			# Select the new body in Godot Editor
+			var sel := EditorInterface.get_selection()
+			sel.clear()
+			sel.add_node(body_node)
+			
+			res.success = true
+			res.message = "Successfully wrapped '" + original_name + "' inside [" + body_type + "] with " + shape_type + " CollisionShape2D (" + str(col_size.x) + "x" + str(col_size.y) + ") at position " + str(original_global_pos)
+			return res
+
+		# =========================================================================
+		# 2. SCENE NODE REPARENTING, MODIFICATION, DELETION
+		# =========================================================================
+		"reparent_node":
+			if not scene_root:
+				res.message = "No active scene open."
+				return res
+			var node_id: String = action.get("node", "")
+			var new_parent_id: String = action.get("new_parent", action.get("parent", ""))
+			var target_node := _find_target_node(scene_root, node_id)
+			var new_parent := _find_target_node(scene_root, new_parent_id)
+			
+			if not target_node:
+				res.message = "Node '" + node_id + "' not found."
+				return res
+			if not new_parent:
+				res.message = "Destination parent '" + new_parent_id + "' not found."
+				return res
+			
+			var keep_transform: bool = action.get("keep_global_transform", true)
+			target_node.reparent(new_parent, keep_transform)
+			target_node.owner = scene_root
+			res.success = true
+			res.message = "Reparented '" + target_node.name + "' under '" + new_parent.name + "'"
+
+		"delete_node":
+			if not scene_root:
+				res.message = "No active scene open."
+				return res
+			var target_id: String = action.get("target", action.get("name", ""))
+			var target_node := _find_target_node(scene_root, target_id)
+			if not target_node:
+				res.message = "Node '" + target_id + "' not found to delete."
+				return res
+			var n_name := target_node.name
+			target_node.queue_free()
+			res.success = true
+			res.message = "Deleted node '" + n_name + "' from scene tree."
+
+		"set_node_properties":
+			if not scene_root:
+				res.message = "No active scene open."
+				return res
+			var target_id: String = action.get("target", action.get("node", ""))
+			var target_node := _find_target_node(scene_root, target_id)
+			if not target_node:
+				res.message = "Node '" + target_id + "' not found."
+				return res
+			var props: Dictionary = action.get("properties", {})
+			for k in props:
+				var v = props[k]
+				if k == "position" and v is Array and v.size() >= 2:
+					target_node.set("position", Vector2(v[0], v[1]))
+				elif k == "global_position" and v is Array and v.size() >= 2:
+					target_node.set("global_position", Vector2(v[0], v[1]))
+				elif k == "scale" and v is Array and v.size() >= 2:
+					target_node.set("scale", Vector2(v[0], v[1]))
+				elif k == "size" and v is Array and v.size() >= 2:
+					target_node.set("size", Vector2(v[0], v[1]))
+				else:
+					target_node.set(k, v)
+			res.success = true
+			res.message = "Updated properties for '" + target_node.name + "': " + str(props.keys())
+
+		"attach_script":
+			if not scene_root:
+				res.message = "No active scene open."
+				return res
+			var target_id: String = action.get("target", action.get("node", ""))
+			var target_node := _find_target_node(scene_root, target_id)
+			var script_path: String = action.get("path", "")
+			var script_content: String = action.get("content", "")
+			if not target_node:
+				res.message = "Node '" + target_id + "' not found."
+				return res
+			if not script_path.begins_with("res://"): script_path = "res://" + script_path
+			
+			if not script_content.is_empty():
+				var d_path := script_path.get_base_dir()
+				if not DirAccess.dir_exists_absolute(d_path):
+					DirAccess.make_dir_recursive_absolute(d_path)
+				var f := FileAccess.open(script_path, FileAccess.WRITE)
+				if f:
+					f.store_string(script_content)
+					f.close()
+					EditorInterface.get_resource_filesystem().scan()
+			
+			if ResourceLoader.exists(script_path):
+				var scr = ResourceLoader.load(script_path)
+				target_node.set_script(scr)
+				res.success = true
+				res.message = "Attached script " + script_path + " to node '" + target_node.name + "'"
+			else:
+				res.message = "Script not found at: " + script_path
+
+		# =========================================================================
+		# 3. FILE OPERATIONS
+		# =========================================================================
 		"delete_file":
 			var target_path: String = action.get("path", "")
 			if target_path.is_empty():
@@ -296,21 +533,20 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			res.success = true
 			res.message = "Organized " + str(moved_count) + " assets into structured directories (Textures, Audio, Shaders, Scripts)."
 
-		# 2. SCENE & NODE TREE BUILDER
+		# =========================================================================
+		# 4. SCENE & NODE TREE BUILDER
+		# =========================================================================
 		"add_node":
 			var node_type: String = action.get("node_type", "Node2D")
 			var node_name: String = action.get("name", node_type)
 			var parent_name: String = action.get("parent", "")
-			var scene_root := EditorInterface.get_edited_scene_root()
 			if not scene_root:
 				res.message = "No active scene open in Godot. Open or create a scene first."
 				return res
 			
-			var parent_node: Node = scene_root
-			if not parent_name.is_empty() and parent_name != scene_root.name:
-				var found := scene_root.find_child(parent_name, true, false)
-				if found:
-					parent_node = found
+			var parent_node := _find_target_node(scene_root, parent_name)
+			if not parent_node:
+				parent_node = scene_root
 			
 			if ClassDB.class_exists(node_type):
 				var new_node: Node = ClassDB.instantiate(node_type)
@@ -348,29 +584,31 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		"create_collision_shape":
 			var parent_name: String = action.get("parent", "")
 			var shape_type: String = action.get("shape", "rectangle") # rectangle, circle, capsule
-			var scene_root := EditorInterface.get_edited_scene_root()
 			if not scene_root:
 				res.message = "No active scene open."
 				return res
-			var parent_node: Node = scene_root
-			if not parent_name.is_empty():
-				var f := scene_root.find_child(parent_name, true, false)
-				if f: parent_node = f
+			var parent_node := _find_target_node(scene_root, parent_name)
+			if not parent_node:
+				parent_node = scene_root
 			
 			var col := CollisionShape2D.new()
 			col.name = "CollisionShape2D"
+			var col_size := Vector2(32, 32)
+			if action.has("size") and action["size"] is Array and action["size"].size() >= 2:
+				col_size = Vector2(action["size"][0], action["size"][1])
+			
 			if shape_type == "circle":
 				var c := CircleShape2D.new()
-				c.radius = 16.0
+				c.radius = max(col_size.x, col_size.y) / 2.0
 				col.shape = c
 			elif shape_type == "capsule":
 				var cap := CapsuleShape2D.new()
-				cap.radius = 12.0
-				cap.height = 32.0
+				cap.radius = min(col_size.x, col_size.y) / 2.0
+				cap.height = max(col_size.x, col_size.y)
 				col.shape = cap
 			else:
 				var r := RectangleShape2D.new()
-				r.size = Vector2(32, 32)
+				r.size = col_size
 				col.shape = r
 			
 			parent_node.add_child(col)
@@ -382,7 +620,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			var scene_path: String = action.get("path", "res://Scenes/NewScene.tscn")
 			var root_type: String = action.get("root_type", "CharacterBody2D")
 			var root_name: String = action.get("name", "Player")
-			if not scene_path.begins_with("res://"): scene_path = "res://" + scene_path
+			if not scene_path.begins_with("res://"): scene_path = "res://Scenes/" + scene_path.get_file()
 			var parent_d := scene_path.get_base_dir()
 			if not DirAccess.dir_exists_absolute(parent_d):
 				DirAccess.make_dir_recursive_absolute(parent_d)
@@ -421,13 +659,21 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			else:
 				res.message = "Invalid root type: " + root_type
 
-		# 3. SHADER APPLIER
+		# =========================================================================
+		# 5. SHADER APPLIER
+		# =========================================================================
 		"apply_shader":
 			var shader_code: String = action.get("shader_code", "")
 			var save_path: String = action.get("save_path", "")
-			res = apply_shader_to_node(shader_code, null, save_path)
+			var target_id: String = action.get("target", "")
+			var target_node: Node = null
+			if not target_id.is_empty() and scene_root:
+				target_node = _find_target_node(scene_root, target_id)
+			res = apply_shader_to_node(shader_code, target_node, save_path)
 
-		# 4. SCRIPT REPLACEMENT & INJECTION
+		# =========================================================================
+		# 6. SCRIPT REPLACEMENT & INJECTION
+		# =========================================================================
 		"replace_active_script":
 			var content: String = action.get("content", "")
 			if insert_code_to_active_script(content, true):
@@ -878,7 +1124,7 @@ static func request_ai(
     description: 'Step-by-step setup documentation for installing the plugin in any Godot 4 game project.',
     content: `# Godot AI Copilot Pro - Agentic IDE Plugin for Godot 4.x
 
-An in-editor agentic AI game development assistant for Godot Engine with direct file system, scene tree builder, error fixer, and shader studio capabilities!
+An in-editor agentic AI game development assistant for Godot Engine with direct file system, auto physics colliders wrapper, scene tree builder, error fixer, and shader studio capabilities!
 
 ## 🚀 Quick Setup Guide
 
@@ -893,6 +1139,7 @@ An in-editor agentic AI game development assistant for Godot Engine with direct 
    │       ├── dock.tscn
    │       ├── dock.gd
    │       ├── bridge.gd
+   │       ├── SKILL.md
    │       └── README.md
    ├── project.godot
    \`\`\`
@@ -900,19 +1147,97 @@ An in-editor agentic AI game development assistant for Godot Engine with direct 
 2. **Enable Plugin in Godot**:
    - Open Godot 4.
    - Go to **Project** -> **Project Settings...** -> **Plugins** tab.
-   - Find **Godot AI Copilot** and check the **Enable** checkbox.
+   - Find **Godot AI Copilot Pro** and check the **Enable** checkbox.
 
 3. **Use the In-Editor Dock**:
    - Look at the bottom dock bar in Godot (next to Output, Debugger, Audio, Animation).
    - Click **AI Copilot** to open the panel.
    - Set the Server URL to your hosted Web AI Helper URL or \`http://localhost:3000\`.
 
-## 🌟 5 Advanced Agentic Capabilities
-1. **AI Scene Node Builder**: Command the AI to create nodes (e.g. \`CharacterBody2D\`, \`PointLight2D\`, \`Camera2D\`), configure collision shapes, set positions, and build scene hierarchies automatically.
-2. **1-Click Error Fixer**: Click **🤖 Fix Error** to diagnose and refactor the active script in Godot's Script Editor.
-3. **Instant Shader Studio**: Generate 2D/3D shaders and click **🎨 Apply Shader** to assign it immediately as a \`ShaderMaterial\` onto your selected node!
-4. **Asset & TileSet Organizer**: Say *"organize my project assets"* to batch sort audio, textures, shaders, and scripts into clean folders.
-5. **Project-Wide Multi-Script Context**: Scans project files and scene hierarchies so the AI writes fully integrated multi-script architectures.
+## 🌟 Advanced Agentic Capabilities
+1. **Auto Physics Collider Wrapper**: Ask *"make collision for Chest"* -> AI instantly wraps the sprite in a \`StaticBody2D\` / \`Area2D\`, transfers coordinates, and creates an auto-sized \`CollisionShape2D\` matching the sprite texture.
+2. **AI Scene Node Builder**: Command the AI to create nodes (e.g. \`CharacterBody2D\`, \`PointLight2D\`, \`Camera2D\`), reparent nodes, set properties, and build hierarchies automatically.
+3. **1-Click Error Fixer**: Click **🤖 Fix Error** to diagnose and refactor the active script in Godot's Script Editor.
+4. **Instant Shader Studio**: Generate 2D/3D shaders and click **🎨 Apply Shader** to assign it immediately as a \`ShaderMaterial\` onto your selected node!
+5. **Asset & TileSet Organizer**: Say *"organize my project assets"* to batch sort audio, textures, shaders, and scripts into clean folders.
+`
+  },
+  {
+    path: 'addons/godot_ai_copilot/SKILL.md',
+    filename: 'SKILL.md',
+    language: 'markdown',
+    description: 'System Prompt Skill specification instructing AI models (Gemini, OpenRouter, Claude, GPT-4o, Codex, Groq, Ollama) on Godot 4 architecture & autonomous execution.',
+    content: `# 🎮 Godot Engine 4.x Master AI Architect & Agentic IDE Copilot Skill
+> **Skill Version:** 4.2.0-PRO | **Target Engine:** Godot 4.x (with 3.x Migration Support) | **Language:** GDScript 2.0 & GLSL Shaders
+
+This master skill document equips any AI model (Claude 3.5 Sonnet, Gemini 3.7 / 2.5, GPT-4o, Codex, DeepSeek R1/V3, Llama 3.3) with complete mastery over the Godot game engine, project hierarchies, physics wrappers, GDScript 2.0 idioms, and in-editor agentic execution actions.
+
+---
+
+## 1. Core Identity & Autonomous Execution Protocol
+- **Identity**: You are an active **Agentic In-Editor Copilot Plugin** running directly inside Godot Engine Editor (bottom dock & toolbar) with full read/write permissions over \`res://\` and the active SceneTree.
+- **Direct Action Constraint**: **NEVER** output passive phrases such as *"As an AI I cannot touch your files"* or *"You need to manually reparent this in the inspector"*.
+- **Execution Output**: When the user requests a code change, node creation, collision setup, file organization, or shader application, **always accompany your response with an executable \`\`\`action JSON block**.
+
+---
+
+## 2. Project Ingestion, Scene Tree Memory & Context Rules
+Whenever the Godot Editor Plugin sends context to you, observe these four data streams:
+1. **\`scene_tree\` (Hierarchy)**:
+   - Contains the exact node names, node classes, parent-child relationships, coordinates, and attached scripts.
+   - **Rule**: Never guess root names. If root is \`Level1\` (\`Node2D\`), address children relative to \`Level1\`.
+2. **\`selected_nodes\` (Viewport Selection)**:
+   - Contains currently highlighted nodes in 2D/3D editor viewports.
+   - **Rule**: If user says *"add collider to this"* or *"apply shader"*, target the node specified in \`selected_nodes\`.
+3. **\`context_code\` (Active Script)**:
+   - Contains the currently focused file in Godot's Script Editor.
+   - **Rule**: Maintain existing functions, variables, signals, and comments. Only modify or replace what is requested.
+4. **\`project_files\` (FileSystem Index)**:
+   - Contains all resources, textures, audio, shaders, and scripts in \`res://\`.
+
+---
+
+## 3. Auto Physics Collider & Scene Wrapper System
+In Godot, a visual node (e.g. \`Sprite2D\`, \`AnimatedSprite2D\`) cannot collide by itself. It must be wrapped inside a Physics Body (\`StaticBody2D\`, \`CharacterBody2D\`, or \`Area2D\`) with a child \`CollisionShape2D\`.
+
+### ⚡ The \`wrap_with_body\` Protocol
+When the user asks *"Make collision for [NodeName]"* or *"Add collider to Chest"*:
+\`\`\`action
+{
+  "actions": [
+    {
+      "type": "wrap_with_body",
+      "target": "Chest",
+      "body_type": "StaticBody2D",
+      "shape": "rectangle"
+    }
+  ]
+}
+\`\`\`
+
+---
+
+## 4. GDScript 2.0 Strict Architectural Standards
+- Always use typed GDScript 2.0 (\`var speed: float = 300.0\`, \`func _ready() -> void:\`).
+- Use modern signals (\`signal health_changed(new_health: int)\`, emit via \`health_changed.emit(hp)\`, connect via \`sig.connect(_on_handler)\`).
+- In Godot 4, \`move_and_slide()\` takes NO parameters. Assign \`velocity\` first, then call \`move_and_slide()\`.
+- Use \`@export\`, \`@onready\`, \`@rpc\`, \`@tool\` annotations.
+- Use \`CharacterBody2D\` / \`CharacterBody3D\` instead of Godot 3's \`KinematicBody\`.
+- Use \`callable.call()\`, \`DisplayServer.window_set_title()\`, \`DirAccess\` and \`FileAccess\`.
+
+---
+
+## 5. Agentic Editor Action JSON Specification
+Available executable actions:
+- \`wrap_with_body\`: Wrap target node with \`StaticBody2D\`, \`Area2D\`, or \`CharacterBody2D\` and auto-sized \`CollisionShape2D\`.
+- \`add_node\`: Instantiate any Godot class (\`CharacterBody2D\`, \`Camera2D\`, \`PointLight2D\`, \`CollisionShape2D\`) with properties.
+- \`reparent_node\`: Reparent child node to target parent node while maintaining transform.
+- \`delete_node\`: Delete unwanted node from scene hierarchy.
+- \`set_node_properties\`: Modify position, rotation, scale, modulate, collision_layer, or texture.
+- \`delete_matching\`: Clean project by deleting files matching regex/substring (e.g. "Polish").
+- \`create_file\`: Write any script or scene file to \`res://\`.
+- \`apply_shader\`: Create or assign \`ShaderMaterial\` directly to selected or targeted CanvasItem/Node3D.
+- \`organize_assets\`: Batch sort loose assets into \`res://Assets/Textures\`, \`res://Assets/Audio\`, \`res://Shaders\`, and \`res://Scripts\`.
 `
   },
   {
@@ -997,7 +1322,7 @@ PORT = 3000
 HOST = "0.0.0.0"
 
 SYSTEM_INSTRUCTION = """You are Godot AI Agentic IDE Copilot Pro specialized in Godot 4.x (and 3.x when requested).
-Write clean, typed GDScript 2.0. You have full permission to manipulate project files, delete assets, create nodes, and apply shaders."""
+Write clean, typed GDScript 2.0. You have full permission to manipulate project files, delete assets, wrap objects with colliders, create nodes, and apply shaders."""
 
 def get_ai_client() -> genai.Client:
     return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -1042,17 +1367,24 @@ def handle_godot_prompt() -> Any:
         content += """\\n
 CRITICAL DIRECTIVE:
 You are an active Agentic IDE Copilot plugin running inside Godot Editor.
-Whenever the user asks to add nodes, delete files, remove assets, organize folders, create shaders, or modify scripts, output an action block:
+Whenever the user asks to add nodes, wrap objects with colliders, delete files, remove assets, organize folders, create shaders, or modify scripts, output an action block:
 \`\`\`action
 {
   "actions": [
-    { "type": "add_node", "node_type": "CharacterBody2D", "name": "Player", "parent": "", "add_collision_shape": true },
-    { "type": "delete_matching", "pattern": "Polish" },
-    { "type": "apply_shader", "shader_code": "shader_type canvas_item; ...", "save_path": "res://Shaders/water.gdshader" },
-    { "type": "organize_assets" }
+    { "type": "wrap_with_body", "target": "Chest", "body_type": "StaticBody2D", "shape": "rectangle" }
   ]
 }
 \`\`\`
+
+Available actions:
+- { "type": "wrap_with_body", "target": "<NodeName>", "body_type": "StaticBody2D|Area2D|CharacterBody2D", "shape": "rectangle|circle|capsule" }
+- { "type": "add_node", "node_type": "CharacterBody2D", "name": "Player", "parent": "", "add_collision_shape": true }
+- { "type": "reparent_node", "node": "ChildNode", "new_parent": "TargetParent" }
+- { "type": "delete_node", "target": "UnwantedNode" }
+- { "type": "set_node_properties", "target": "NodeName", "properties": {"position": [100, 100]} }
+- { "type": "delete_matching", "pattern": "Polish" }
+- { "type": "apply_shader", "shader_code": "shader_type canvas_item; ...", "save_path": "res://Shaders/water.gdshader" }
+- { "type": "organize_assets" }
 """
 
         response = client.models.generate_content(

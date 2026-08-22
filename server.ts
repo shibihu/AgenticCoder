@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import { getGeminiAI, GODOT_SYSTEM_INSTRUCTION } from './server/gemini';
+import { generateAIResponse, GODOT_MASTER_SKILL_PROMPT, autoSelectBestModel } from './server/aiRouter';
 import { GODOT_ADDON_FILES } from './src/data/addonFiles';
 import JSZip from 'jszip';
 
@@ -31,10 +31,84 @@ async function startServer() {
   app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
-      service: 'Godot AI Copilot & Addon Hub',
+      service: 'Godot AI Copilot Pro & Multi-Provider Engine',
       godotBridgeActive: true,
       geminiConfigured: !!process.env.GEMINI_API_KEY,
+      openRouterConfigured: !!process.env.OPENROUTER_API_KEY,
+      claudeConfigured: !!process.env.ANTHROPIC_API_KEY,
+      openAIConfigured: !!process.env.OPENAI_API_KEY,
+      groqConfigured: !!process.env.GROQ_API_KEY,
       timestamp: Date.now(),
+    });
+  });
+
+  // Available AI Providers & Recommended Models
+  app.get('/api/providers', (req, res) => {
+    res.json({
+      defaultProvider: 'auto',
+      providers: [
+        {
+          id: 'auto',
+          name: '🤖 Auto (Smart Best Model Router)',
+          description: 'Intelligently analyzes code & prompt complexity to route to Claude 3.5 Sonnet, Gemini 3.7 Flash, or Groq.',
+          isAuto: true,
+          models: ['Auto Selected (Claude 3.5 Sonnet / Gemini 3.7 / Groq)'],
+        },
+        {
+          id: 'gemini',
+          name: 'Google Gemini',
+          description: 'High-speed reasoning, 1M+ context window, native multimodal understanding.',
+          hasServerKey: !!process.env.GEMINI_API_KEY,
+          defaultModel: 'gemini-3.7-flash',
+          models: ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+        },
+        {
+          id: 'openrouter',
+          name: 'OpenRouter (Universal)',
+          description: 'Unified API for Claude 3.5 Sonnet, DeepSeek V3/R1, Qwen 2.5, and Llama 3.3.',
+          hasServerKey: !!process.env.OPENROUTER_API_KEY,
+          defaultModel: 'anthropic/claude-3.5-sonnet',
+          models: [
+            'anthropic/claude-3.5-sonnet',
+            'deepseek/deepseek-chat',
+            'deepseek/deepseek-r1',
+            'meta-llama/llama-3.3-70b-instruct',
+            'openai/gpt-4o',
+          ],
+        },
+        {
+          id: 'claude',
+          name: 'Anthropic Claude',
+          description: 'Top-tier complex GDScript 2.0 system architecture and refactoring.',
+          hasServerKey: !!process.env.ANTHROPIC_API_KEY,
+          defaultModel: 'claude-3-5-sonnet-20241022',
+          models: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+        },
+        {
+          id: 'openai',
+          name: 'OpenAI / Codex',
+          description: 'State-of-the-art coding and reasoning capabilities.',
+          hasServerKey: !!process.env.OPENAI_API_KEY,
+          defaultModel: 'gpt-4o',
+          models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1'],
+        },
+        {
+          id: 'groq',
+          name: 'Groq Cloud (Ultra Fast)',
+          description: 'Lightning-fast 500+ tokens/sec inference powered by LPUs for instant code/shaders.',
+          hasServerKey: !!process.env.GROQ_API_KEY,
+          defaultModel: 'llama-3.3-70b-versatile',
+          models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+        },
+        {
+          id: 'custom',
+          name: 'Custom / Local (Ollama, LMStudio)',
+          description: 'Connect directly to your local Ollama or OpenAI-compatible server.',
+          defaultModel: 'llama3.2',
+          defaultEndpoint: 'http://localhost:11434/v1/chat/completions',
+          models: ['llama3.2', 'deepseek-coder', 'qwen2.5-coder', 'custom'],
+        },
+      ],
     });
   });
 
@@ -58,19 +132,26 @@ async function startServer() {
     }
   });
 
-  // Main Web Chat AI endpoint
+  // Main Web Chat AI endpoint (Multi-Provider)
   app.post('/api/chat', async (req, res) => {
     try {
-      const { messages, godotVersion = '4.x', mode = 'chat', currentCode } = req.body;
+      const {
+        messages,
+        godotVersion = '4.x',
+        mode = 'chat',
+        currentCode,
+        provider = 'auto',
+        model,
+        apiKey,
+        customEndpoint,
+      } = req.body;
       
       if (!messages || !Array.isArray(messages) || messages.length === 0) {
         res.status(400).json({ error: 'Messages array is required' });
         return;
       }
 
-      const ai = getGeminiAI();
       const lastMessage = messages[messages.length - 1];
-
       let contextualPrompt = lastMessage.content;
       if (currentCode) {
         contextualPrompt += `\n\n--- CURRENT SCRIPT CONTEXT (${godotVersion}) ---\n\`\`\`gdscript\n${currentCode}\n\`\`\``;
@@ -78,29 +159,32 @@ async function startServer() {
 
       // Build conversation contents
       const conversationHistory = messages.slice(0, -1).map((m: any) => ({
-        role: m.role === 'user' ? 'user' : 'model',
-        parts: [{ text: m.content }],
+        role: m.role === 'user' ? ('user' as const) : ('model' as const),
+        content: m.content,
       }));
 
       conversationHistory.push({
         role: 'user',
-        parts: [{ text: contextualPrompt }],
+        content: contextualPrompt,
       });
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
-        contents: conversationHistory,
-        config: {
-          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nTarget Godot Version: ${godotVersion}.\nCurrent Mode: ${mode}.`,
-          temperature: 0.4,
-          topP: 0.95,
-        },
-      });
+      const systemInstruction = GODOT_MASTER_SKILL_PROMPT + `\nTarget Godot Version: ${godotVersion}.\nCurrent Mode: ${mode}.`;
 
-      const text = response.text || 'No response generated from model.';
+      const aiResult = await generateAIResponse({
+        messages: conversationHistory,
+        systemInstruction,
+        provider,
+        model,
+        apiKey,
+        customEndpoint,
+        temperature: 0.35,
+        godotVersion,
+      });
 
       res.json({
-        reply: text,
+        reply: aiResult.text,
+        providerUsed: aiResult.providerUsed,
+        modelUsed: aiResult.modelUsed,
         timestamp: Date.now(),
       });
     } catch (err: any) {
@@ -112,7 +196,7 @@ async function startServer() {
     }
   });
 
-  // Dedicated Godot Engine Editor Addon Bridge Endpoint
+  // Dedicated Godot Engine Editor Addon Bridge Endpoint (Multi-Provider)
   // This is called by the in-editor Godot Dock (addons/godot_ai_copilot/dock.gd)
   app.post('/api/godot/prompt', async (req, res) => {
     try {
@@ -124,6 +208,10 @@ async function startServer() {
         project_files = [],
         scene_tree = null,
         selected_nodes = [],
+        provider = 'auto',
+        model,
+        api_key,
+        custom_endpoint,
       } = req.body;
 
       if (!prompt) {
@@ -145,53 +233,25 @@ async function startServer() {
         enhancedPrompt += `\nProject Files Known in FileSystem (${project_files.length} files scanned):\n${project_files.slice(0, 100).join('\n')}\n`;
       }
 
-      enhancedPrompt += `
-CRITICAL DIRECTIVE:
-You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IN-EDITOR SCENE EXECUTION PERMISSIONS.
-NEVER say "As an AI I cannot modify files" or "You must do this manually".
-Whenever the user asks to add nodes, delete files, remove assets, organize folders, create shaders, create scenes, or refactor code, you MUST output an action block using:
-\`\`\`action
-{
-  "actions": [
-    { "type": "add_node", "node_type": "CharacterBody2D", "name": "Player", "parent": "", "add_collision_shape": true },
-    { "type": "delete_matching", "pattern": "Polish" },
-    { "type": "apply_shader", "shader_code": "shader_type canvas_item; ...", "save_path": "res://Shaders/water.gdshader" }
-  ]
-}
-\`\`\`
+      enhancedPrompt += `\nCRITICAL INSTRUCTION:
+You are an active Agentic IDE Copilot plugin running inside Godot Editor.
+Whenever the user asks to add nodes, wrap objects with colliders, delete files, remove assets, organize folders, create shaders, create scenes, reparent nodes, or refactor code, you MUST output a valid \`\`\`action block with corresponding JSON.
+Respond with a brief, clear explanation in the user's language (Thai or English), followed by the action JSON block.`;
 
-Supported action commands:
-1. SCENE & NODES:
-   - Add Node: { "type": "add_node", "node_type": "CharacterBody2D|Sprite2D|Area2D|Camera2D|PointLight2D|MeshInstance3D", "name": "NodeName", "parent": "ParentNodeName", "properties": {"position": [100, 200]}, "add_collision_shape": true }
-   - Collision Shape: { "type": "create_collision_shape", "parent": "Player", "shape": "rectangle|circle|capsule" }
-   - New Scene: { "type": "create_scene", "path": "res://Scenes/Level1.tscn", "root_type": "Node2D|Node3D|CharacterBody2D", "name": "Level1" }
+      const systemInstruction = GODOT_MASTER_SKILL_PROMPT + `\nYou are Godot AI Agentic IDE Copilot Pro with direct in-editor file-modification, scene building, shader applying, and code-execution abilities. Target version: ${godot_version}.`;
 
-2. FILES & ASSETS:
-   - Delete Matching: { "type": "delete_matching", "pattern": "<name_or_substring>" }
-   - Delete Specific: { "type": "delete_file", "path": "res://Assets/path/file.png" }
-   - Move/Rename: { "type": "move_file", "from": "res://file.png", "to": "res://Assets/Textures/file.png" }
-   - Create Script/File: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
-   - Auto Organize Assets: { "type": "organize_assets" }
-
-3. SHADERS:
-   - Apply Shader: { "type": "apply_shader", "shader_code": "<shader_code>", "save_path": "res://Shaders/my_shader.gdshader" }
-
-4. SCRIPTS:
-   - Replace Current Active Script: { "type": "replace_active_script", "content": "<gdscript_code>" }
-
-Respond with confirmation of the action and the action JSON block.`;
-
-      const ai = getGeminiAI();
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: enhancedPrompt,
-        config: {
-          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nYou are Godot AI Agentic IDE Copilot Pro with real file-modification, scene building, shader applying, and code-execution tools. ALWAYS output \`\`\`action blocks for IDE operations. NEVER state that you cannot access files. Target version: ${godot_version}.`,
-          temperature: 0.1,
-        },
+      const aiResult = await generateAIResponse({
+        messages: [{ role: 'user', content: enhancedPrompt }],
+        systemInstruction,
+        provider,
+        model,
+        apiKey: api_key,
+        customEndpoint: custom_endpoint,
+        temperature: 0.1,
+        godotVersion: godot_version,
       });
 
-      const text = response.text || '';
+      const text = aiResult.text || '';
 
       // Extract primary code block if present
       let extractedCode = '';
@@ -220,6 +280,8 @@ Respond with confirmation of the action and the action JSON block.`;
         actions: actions,
         mode: mode,
         godot_version: godot_version,
+        providerUsed: aiResult.providerUsed,
+        modelUsed: aiResult.modelUsed,
       });
     } catch (err: any) {
       console.error('[Godot Bridge Error]:', err);
@@ -254,3 +316,4 @@ startServer().catch((err) => {
   console.error('[Server Startup Fatal Error]:', err);
   process.exit(1);
 });
+

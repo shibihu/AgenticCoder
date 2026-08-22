@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { CopilotMode, GodotVersion, ChatMessage } from './types';
+import React, { useState, useEffect } from 'react';
+import { CopilotMode, GodotVersion, ChatMessage, AIModelConfig } from './types';
 import { Header } from './components/Header';
 import { ChatView } from './components/ChatView';
 import { AddonHub } from './components/AddonHub';
@@ -8,26 +8,36 @@ import { NodeArchitect } from './components/NodeArchitect';
 import { ShaderLab } from './components/ShaderLab';
 import { Godot3To4Converter } from './components/Godot3To4Converter';
 import { AddonInstallModal } from './components/AddonInstallModal';
+import { ProviderSettingsModal } from './components/ProviderSettingsModal';
 import { GODOT_ADDON_FILES } from './data/addonFiles';
 import JSZip from 'jszip';
+
+const DEFAULT_AI_CONFIG: AIModelConfig = {
+  provider: 'auto',
+  model: 'Auto-Routed',
+  apiKey: '',
+  customEndpoint: '',
+};
 
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: 'welcome-msg',
     role: 'assistant',
     timestamp: Date.now(),
-    content: `### Welcome to Godot AI Copilot & Addon Hub! 🚀
+    providerUsed: 'Multi-LLM Auto Router',
+    modelUsed: 'Smart Engine',
+    content: `### Welcome to Godot AI Copilot Pro & Addon Hub! 🚀
 
-I am your agentic game development assistant specialized in **Godot 4.x & GDScript 2.0**. You can use me directly here in the web app, or **drop my custom addon plugin into your Godot project** to chat and generate code directly inside the Godot Editor dock!
+I am your agentic game development assistant specialized in **Godot 4.x & GDScript 2.0**, powered by an **Intelligent Multi-Provider AI Engine** (Google Gemini, OpenRouter, Anthropic Claude, OpenAI, Groq, & Local Ollama).
 
-#### What I can help you build:
-- **Physics Controllers**: CharacterBody2D/3D platformers with coyote time, jump buffering, wall jumping, and dash mechanics.
-- **Game Architectures**: Finite State Machines (FSM), grid inventory systems, dialogue managers, and save/load systems.
-- **Godot Shaders (.gdshader)**: Stylized 2D water, burning dissolve effects, CRT scanlines, and pixel outlines.
-- **Scene Trees & Nodes**: Optimal scene composition and @onready boilerplate.
-- **Godot 3 ➔ 4 Migration**: Automatic GDScript refactoring for breaking changes.
+#### 🌟 Advanced In-Editor & Web Capabilities:
+- **🛡️ Auto Physics Collider Wrapper**: Ask *"Make collision for Chest"* -> Wraps your Sprite in a \`StaticBody2D\` / \`Area2D\` and creates an auto-sized \`CollisionShape2D\` matching the texture dimensions!
+- **🏗️ In-Editor Scene Builder**: Generates nodes, reparents hierarchy, and configures transforms directly in Godot.
+- **🤖 1-Click Error Diagnostics**: Analyzes Godot Script Editor stacktraces and applies instant refactors.
+- **🎨 Shader Studio (.gdshader)**: Stylized water, dissolving burns, outlines, and screen-space post-processing.
+- **🔄 Godot 3 ➔ 4 Migration**: Automatic GDScript refactoring for breaking changes.
 
-Click any of the quick prompts above or ask me anything to get started!`
+Click **Config** in the top bar to choose your preferred AI Provider or use **Auto Best Model**!`
   }
 ];
 
@@ -37,9 +47,28 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isDownloadingZip, setIsDownloadingZip] = useState<boolean>(false);
+  const [aiConfig, setAiConfig] = useState<AIModelConfig>(() => {
+    try {
+      const saved = localStorage.getItem('godot_ai_config');
+      return saved ? JSON.parse(saved) : DEFAULT_AI_CONFIG;
+    } catch {
+      return DEFAULT_AI_CONFIG;
+    }
+  });
 
-  // Send message to server Gemini AI endpoint
+  // Save AI Config to localStorage
+  const handleSaveAIConfig = (newConfig: AIModelConfig) => {
+    setAiConfig(newConfig);
+    try {
+      localStorage.setItem('godot_ai_config', JSON.stringify(newConfig));
+    } catch (e) {
+      console.warn('Could not save ai config:', e);
+    }
+  };
+
+  // Send message to server Multi-Provider AI endpoint
   const handleSendMessage = async (content: string, contextCode?: string) => {
     const userMsgId = `user-${Date.now()}`;
     const newMessages: ChatMessage[] = [
@@ -64,11 +93,16 @@ export default function App() {
           godotVersion,
           mode: currentMode,
           currentCode: contextCode,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          apiKey: aiConfig.apiKey,
+          customEndpoint: aiConfig.customEndpoint,
         }),
       });
 
       if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || errJson.details || `Server returned HTTP ${res.status}`);
       }
 
       const data = await res.json();
@@ -79,6 +113,8 @@ export default function App() {
           id: `bot-${Date.now()}`,
           role: 'assistant',
           content: data.reply || 'No response received from Godot AI.',
+          providerUsed: data.providerUsed,
+          modelUsed: data.modelUsed,
           timestamp: Date.now(),
         }
       ]);
@@ -89,7 +125,7 @@ export default function App() {
         {
           id: `bot-err-${Date.now()}`,
           role: 'assistant',
-          content: `⚠️ **Connection Error**: Could not complete request to Godot AI.\n\`\`\`\n${err.message || String(err)}\n\`\`\`\nPlease verify your network or try again.`,
+          content: `⚠️ **AI Engine Error**: Could not complete request to Godot AI.\n\`\`\`\n${err.message || String(err)}\n\`\`\`\nTip: You can change the Provider or enter an API Key via the **Config** button in the top menu.`,
           timestamp: Date.now(),
         }
       ]);
@@ -136,8 +172,10 @@ export default function App() {
         godotVersion={godotVersion}
         onSelectGodotVersion={setGodotVersion}
         onOpenInstallModal={() => setIsInstallModalOpen(true)}
+        onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         onDownloadAddonZip={handleDownloadAddonZip}
         isDownloadingZip={isDownloadingZip}
+        aiConfig={aiConfig}
       />
 
       {/* Main Content Area */}
@@ -155,6 +193,7 @@ export default function App() {
         {currentMode === 'addon-hub' && (
           <AddonHub
             onOpenInstallModal={() => setIsInstallModalOpen(true)}
+            onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
           />
         )}
 
@@ -189,6 +228,15 @@ export default function App() {
         isOpen={isInstallModalOpen}
         onClose={() => setIsInstallModalOpen(false)}
       />
+
+      {/* AI Provider & Model Settings Modal */}
+      <ProviderSettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        config={aiConfig}
+        onSaveConfig={handleSaveAIConfig}
+      />
     </div>
   );
 }
+
