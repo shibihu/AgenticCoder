@@ -19,7 +19,7 @@ script="godot_ai_copilot.gd"
     path: 'addons/godot_ai_copilot/godot_ai_copilot.gd',
     filename: 'godot_ai_copilot.gd',
     language: 'gdscript',
-    description: 'Main EditorPlugin script. Registers the AI Copilot bottom dock in the Godot 4 Editor.',
+    description: 'Main EditorPlugin script. Registers the AI Copilot bottom dock and provides agentic file system / IDE manipulation APIs in Godot 4.',
     content: `@tool
 extends EditorPlugin
 class_name GodotAICopilotPlugin
@@ -28,11 +28,10 @@ var dock_instance: Control
 const DOCK_SCENE := preload("res://addons/godot_ai_copilot/dock.tscn")
 
 func _enter_tree() -> void:
-	# Instantiate and add the dock to Godot editor bottom panel (or right dock)
 	dock_instance = DOCK_SCENE.instantiate()
 	dock_instance.set_editor_plugin(self)
 	add_control_to_bottom_panel(dock_instance, "AI Copilot")
-	print("[Godot AI Copilot] Plugin activated successfully! Open 'AI Copilot' in the bottom dock.")
+	print("[Godot AI Copilot] Plugin activated with full Agentic IDE capabilities!")
 
 func _exit_tree() -> void:
 	if is_instance_valid(dock_instance):
@@ -40,7 +39,7 @@ func _exit_tree() -> void:
 		dock_instance.queue_free()
 	print("[Godot AI Copilot] Plugin unloaded.")
 
-# Helper to get the current active script editor content
+# Helper to get current active script editor content
 func get_active_script_code() -> String:
 	var script_editor := EditorInterface.get_script_editor()
 	if not script_editor:
@@ -53,15 +52,13 @@ func get_active_script_code() -> String:
 		return base_editor.text
 	return ""
 
-# Helper to insert generated code at cursor or replace selection in active script
+# Helper to insert or replace generated code in active script
 func insert_code_to_active_script(code_to_insert: String, replace_all: bool = false) -> bool:
 	var script_editor := EditorInterface.get_script_editor()
 	if not script_editor:
-		printerr("[Godot AI Copilot] No active script editor open.")
 		return false
 	var current_editor := script_editor.get_current_editor()
 	if not current_editor:
-		printerr("[Godot AI Copilot] No active script open in script editor.")
 		return false
 	var base_editor := current_editor.get_base_editor()
 	if base_editor is TextEdit:
@@ -71,13 +68,120 @@ func insert_code_to_active_script(code_to_insert: String, replace_all: bool = fa
 			base_editor.insert_text_at_caret(code_to_insert)
 		return true
 	return false
+
+# Scan all files in project res://
+func scan_project_files(max_files: int = 150) -> PackedStringArray:
+	var files := PackedStringArray()
+	_scan_dir_recursive("res://", files, max_files)
+	return files
+
+func _scan_dir_recursive(path: String, out_files: PackedStringArray, max_files: int) -> void:
+	if out_files.size() >= max_files:
+		return
+	var dir := DirAccess.open(path)
+	if not dir:
+		return
+	dir.list_dir_begin()
+	var file_name := dir.get_next()
+	while file_name != "":
+		if file_name != "." and file_name != ".." and not file_name.begins_with(".import"):
+			var full_path := path.path_join(file_name)
+			if dir.current_is_dir():
+				if file_name != ".git" and file_name != ".godot":
+					_scan_dir_recursive(full_path, out_files, max_files)
+			else:
+				out_files.append(full_path)
+		file_name = dir.get_next()
+	dir.list_dir_end()
+
+# Execute real IDE / File system actions inside Godot
+func execute_agent_action(action: Dictionary) -> Dictionary:
+	var action_type: String = action.get("type", "")
+	var res := {"success": false, "message": ""}
+	
+	match action_type:
+		"delete_file":
+			var target_path: String = action.get("path", "")
+			if target_path.is_empty():
+				res.message = "File path cannot be empty"
+				return res
+			if not target_path.begins_with("res://"):
+				target_path = "res://" + target_path
+			
+			if FileAccess.file_exists(target_path):
+				var err := DirAccess.remove_absolute(target_path)
+				if FileAccess.file_exists(target_path + ".import"):
+					DirAccess.remove_absolute(target_path + ".import")
+				if err == OK:
+					EditorInterface.get_resource_filesystem().scan()
+					res.success = true
+					res.message = "Deleted " + target_path
+				else:
+					res.message = "Failed to delete " + target_path + " (Error: " + str(err) + ")"
+			else:
+				res.message = "File not found: " + target_path
+		
+		"delete_matching":
+			var pattern: String = action.get("pattern", "")
+			if pattern.is_empty():
+				res.message = "Pattern cannot be empty"
+				return res
+			var all_files := scan_project_files(500)
+			var deleted_count := 0
+			var deleted_names: Array[String] = []
+			for f in all_files:
+				var fname := f.get_file()
+				if pattern.to_lower() in fname.to_lower():
+					var err := DirAccess.remove_absolute(f)
+					if FileAccess.file_exists(f + ".import"):
+						DirAccess.remove_absolute(f + ".import")
+					if err == OK:
+						deleted_count += 1
+						deleted_names.append(fname)
+			if deleted_count > 0:
+				EditorInterface.get_resource_filesystem().scan()
+				res.success = true
+				res.message = "Deleted " + str(deleted_count) + " files matching '" + pattern + "': " + ", ".join(deleted_names)
+			else:
+				res.message = "No files found matching '" + pattern + "'"
+		
+		"create_file":
+			var file_path: String = action.get("path", "")
+			var content: String = action.get("content", "")
+			if not file_path.begins_with("res://"):
+				file_path = "res://" + file_path
+			var parent_dir := file_path.get_base_dir()
+			if not DirAccess.dir_exists_absolute(parent_dir):
+				DirAccess.make_dir_recursive_absolute(parent_dir)
+			var file := FileAccess.open(file_path, FileAccess.WRITE)
+			if file:
+				file.store_string(content)
+				file.close()
+				EditorInterface.get_resource_filesystem().scan()
+				res.success = true
+				res.message = "Created " + file_path
+			else:
+				res.message = "Failed to create " + file_path
+		
+		"replace_active_script":
+			var content: String = action.get("content", "")
+			if insert_code_to_active_script(content, true):
+				res.success = true
+				res.message = "Replaced active script content"
+			else:
+				res.message = "No active script editor open"
+		
+		_:
+			res.message = "Unknown action type: " + action_type
+			
+	return res
 `
   },
   {
     path: 'addons/godot_ai_copilot/dock.gd',
     filename: 'dock.gd',
     language: 'gdscript',
-    description: 'Dock UI Controller with HTTP request handling, response parsing, and direct script injection.',
+    description: 'Dock UI Controller with Agentic action execution, file management, and direct script injection.',
     content: `@tool
 extends Control
 
@@ -113,12 +217,12 @@ func _ready() -> void:
 	mode_option.add_item("Generate GDScript", 1)
 	mode_option.add_item("Fix Script Errors / Refactor", 2)
 	mode_option.add_item("Create Shader (.gdshader)", 3)
-	mode_option.add_item("Node Tree Architecture", 4)
+	mode_option.add_item("Agentic IDE Actions (Files & Scripts)", 4)
 	
 	insert_button.disabled = true
 	copy_button.disabled = true
 	
-	_append_chat("[b][color=#478cbf]Godot AI Copilot Ready![/color][/b]\\nAsk any question, generate character controllers, state machines, shaders, or fix errors.\\n")
+	_append_chat("[b][color=#478cbf]Godot AI Agentic IDE Copilot Ready![/color][/b]\\nAsk questions, write scripts, or give IDE commands (e.g. \\"delete assets named Polish\\", \\"create player.gd\\").\\n")
 
 func set_editor_plugin(plugin: EditorPlugin) -> void:
 	editor_plugin = plugin
@@ -133,7 +237,7 @@ func _on_send_pressed() -> void:
 		server_url = "http://localhost:3000"
 	
 	# Clean up any accidental spaces or newlines from mobile keyboards
-	server_url = server_url.replace(" ", "").replace("\t", "").replace("\n", "").replace("\r", "")
+	server_url = server_url.replace(" ", "").replace("\\t", "").replace("\\n", "").replace("\\r", "")
 	
 	# Prepend https:// if protocol is missing and not localhost
 	if not server_url.begins_with("http://") and not server_url.begins_with("https://"):
@@ -153,17 +257,24 @@ func _on_send_pressed() -> void:
 	if include_script_checkbox.button_pressed and editor_plugin and editor_plugin.has_method("get_active_script_code"):
 		context_code = editor_plugin.get_active_script_code()
 	
+	var project_files: Array[String] = []
+	if editor_plugin and editor_plugin.has_method("scan_project_files"):
+		var scanned: PackedStringArray = editor_plugin.scan_project_files(80)
+		for f in scanned:
+			project_files.append(f)
+	
 	var mode_name := "chat"
 	match mode_option.selected:
 		1: mode_name = "generate_script"
 		2: mode_name = "fix_error"
 		3: mode_name = "generate_shader"
-		4: mode_name = "node_tree"
+		4: mode_name = "agentic_ide"
 	
 	var payload := {
 		"prompt": prompt_text,
 		"mode": mode_name,
 		"context_code": context_code,
+		"project_files": project_files,
 		"godot_version": "4.x"
 	}
 	
@@ -212,8 +323,20 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 	var data: Dictionary = json.data
 	var reply: String = data.get("reply", "")
 	var code: String = data.get("code", "")
+	var actions: Array = data.get("actions", [])
 	
 	_append_chat("[b][color=#478cbf]AI Copilot:[/color][/b]\\n" + reply + "\\n")
+	
+	# Execute IDE Agent Actions automatically in Godot Editor
+	if not actions.is_empty() and editor_plugin and editor_plugin.has_method("execute_agent_action"):
+		_append_chat("[b][color=#f0ad4e]⚡ Executing " + str(actions.size()) + " Agentic IDE Action(s)...[/color][/b]\\n")
+		for action in actions:
+			if action is Dictionary:
+				var res: Dictionary = editor_plugin.execute_agent_action(action)
+				if res.get("success", false):
+					_append_chat("[color=#5cb85c]✓ " + res.get("message", "Action completed") + "[/color]\\n")
+				else:
+					_append_chat("[color=#d9534f]✗ " + res.get("message", "Action failed") + "[/color]\\n")
 	
 	if not code.is_empty():
 		last_generated_code = code
@@ -518,7 +641,7 @@ requests>=2.31.0
     path: 'local_server.py',
     filename: 'local_server.py',
     language: 'python',
-    description: 'Standalone 1-file Python Flask bridge server for hosting on http://localhost:3000 with Google GenAI.',
+    description: 'Standalone 1-file Python Flask bridge server for hosting on http://localhost:3000 with Agentic IDE action execution and Gemini AI.',
     content: `"""
 Godot AI Copilot - Standalone Python Local Host Server.
 Runs on http://localhost:3000 to bridge Godot Editor requests with Gemini AI.
@@ -544,8 +667,8 @@ CORS(app)
 PORT = 3000
 HOST = "0.0.0.0"
 
-SYSTEM_INSTRUCTION = """You are Godot AI Copilot specialized in Godot 4.x (and 3.x when requested).
-Write clean, typed GDScript 2.0 (@export, @onready, move_and_slide(), Callable signals, await)."""
+SYSTEM_INSTRUCTION = """You are Godot AI Agentic IDE Copilot specialized in Godot 4.x (and 3.x when requested).
+Write clean, typed GDScript 2.0. You have full permission to manipulate project files, delete assets, or create scripts."""
 
 def get_ai_client() -> genai.Client:
     return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -560,6 +683,7 @@ def handle_godot_prompt() -> Any:
     prompt = data.get("prompt", "").strip()
     godot_version = data.get("godot_version", "4.x")
     current_code = data.get("current_code", "")
+    project_files = data.get("project_files", [])
 
     if not prompt:
         return jsonify({"error": "Prompt cannot be empty"}), 400
@@ -568,7 +692,7 @@ def handle_godot_prompt() -> Any:
     if not api_key:
         return jsonify({
             "reply": "# Please set GEMINI_API_KEY in your environment to get AI responses.",
-            "code": "func _ready():\n    print('Hello from local Godot Copilot!')"
+            "code": "func _ready():\\n    print('Hello from local Godot Copilot!')"
         })
 
     try:
@@ -576,20 +700,51 @@ def handle_godot_prompt() -> Any:
         content = f"Godot Target Version: {godot_version}\\n\\nUser Request: {prompt}"
         if current_code:
             content += f"\\n\\nActive Script:\\n\`\`\`gdscript\\n{current_code}\\n\`\`\`"
+        if project_files:
+            content += f"\\n\\nProject Files:\\n" + "\\n".join(project_files[:100])
+
+        content += """\\n
+CRITICAL DIRECTIVE:
+You are an active Agentic IDE Copilot plugin running inside Godot Editor.
+Whenever the user asks to delete files, remove assets, or create scripts, output an action block:
+\`\`\`action
+{
+  "actions": [
+    { "type": "delete_matching", "pattern": "Polish" }
+  ]
+}
+\`\`\`
+Actions:
+- { "type": "delete_matching", "pattern": "<name>" }
+- { "type": "delete_file", "path": "res://path/to/file.ext" }
+- { "type": "create_file", "path": "res://scripts/name.gd", "content": "..." }
+- { "type": "replace_active_script", "content": "..." }
+"""
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=content,
-            config={"system_instruction": SYSTEM_INSTRUCTION, "temperature": 0.3}
+            config={"system_instruction": SYSTEM_INSTRUCTION, "temperature": 0.1}
         )
         reply_text = response.text or ""
         code = ""
         if "\`\`\`gdscript" in reply_text:
             code = reply_text.split("\`\`\`gdscript")[1].split("\`\`\`")[0].strip()
-        elif "\`\`\`" in reply_text:
+        elif "\`\`\`" in reply_text and not reply_text.startswith("\`\`\`action"):
             code = reply_text.split("\`\`\`")[1].split("\`\`\`")[0].strip()
 
-        return jsonify({"reply": reply_text, "code": code})
+        actions = []
+        if "\`\`\`action" in reply_text:
+            import json
+            try:
+                action_str = reply_text.split("\`\`\`action")[1].split("\`\`\`")[0].strip()
+                parsed = json.loads(action_str)
+                if isinstance(parsed, dict) and "actions" in parsed:
+                    actions = parsed["actions"]
+            except Exception as e:
+                print(f"[WARN] Action parsing: {e}", file=sys.stderr)
+
+        return jsonify({"reply": reply_text, "code": code, "actions": actions})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

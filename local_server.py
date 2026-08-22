@@ -77,13 +77,36 @@ def handle_godot_prompt() -> Any:
     prompt = data.get("prompt", "").strip()
     godot_version = data.get("godot_version", "4.x")
     current_code = data.get("current_code", "")
+    project_files = data.get("project_files", [])
 
     if not prompt:
         return jsonify({"error": "Prompt cannot be empty"}), 400
 
-    user_content = f"Godot Target Version: {godot_version}\n\nUser Request: {prompt}"
+    user_content = f"Godot Target Version: {godot_version}\n\nUser Prompt: {prompt}"
     if current_code:
         user_content += f"\n\nActive Script Context in Godot Editor:\n```gdscript\n{current_code}\n```"
+    if project_files:
+        user_content += f"\n\nKnown Project Files in Godot:\n" + "\n".join(project_files[:100])
+
+    user_content += """\n
+CRITICAL DIRECTIVE:
+You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IDE EXECUTION PERMISSIONS.
+NEVER say "As an AI I cannot modify files" or "You must do this manually".
+Whenever the user asks to delete files, remove assets, create scripts, modify files, or refactor code, you MUST output an action block using:
+```action
+{
+  "actions": [
+    { "type": "delete_matching", "pattern": "Polish" }
+  ]
+}
+```
+Supported action commands:
+1. Delete files by pattern/name: { "type": "delete_matching", "pattern": "<name_or_substring>" }
+2. Delete specific file: { "type": "delete_file", "path": "res://Assets/path/file.png" }
+3. Create new script or file: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
+4. Replace current open script: { "type": "replace_active_script", "content": "<gdscript_code>" }
+
+Respond with confirmation of the action and the action JSON block."""
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -98,8 +121,8 @@ def handle_godot_prompt() -> Any:
             model="gemini-2.5-flash",
             contents=user_content,
             config={
-                "system_instruction": SYSTEM_INSTRUCTION,
-                "temperature": 0.3,
+                "system_instruction": SYSTEM_INSTRUCTION + "\nYou are Godot AI Agentic IDE Copilot with real file-modification and code-execution tools. ALWAYS output ```action blocks for file operations. NEVER state that you cannot access files. Target version: " + godot_version + ".",
+                "temperature": 0.1,
             }
         )
 
@@ -111,12 +134,25 @@ def handle_godot_prompt() -> Any:
             code = reply_text.split("```gdscript")[1].split("```")[0].strip()
         elif "```gdshader" in reply_text:
             code = reply_text.split("```gdshader")[1].split("```")[0].strip()
-        elif "```" in reply_text:
+        elif "```" in reply_text and not reply_text.startswith("```action"):
             code = reply_text.split("```")[1].split("```")[0].strip()
+
+        # Extract action block if present
+        actions = []
+        if "```action" in reply_text:
+            import json
+            try:
+                action_str = reply_text.split("```action")[1].split("```")[0].strip()
+                parsed_actions = json.loads(action_str)
+                if isinstance(parsed_actions, dict) and "actions" in parsed_actions:
+                    actions = parsed_actions["actions"]
+            except Exception as e:
+                print(f"[WARN] Action parsing error: {e}", file=sys.stderr)
 
         return jsonify({
             "reply": reply_text,
             "code": code,
+            "actions": actions,
         })
     except Exception as exc:
         print(f"[ERROR] Gemini generation error: {exc}", file=sys.stderr)

@@ -116,25 +116,48 @@ async function startServer() {
   // This is called by the in-editor Godot Dock (addons/godot_ai_copilot/dock.gd)
   app.post('/api/godot/prompt', async (req, res) => {
     try {
-      const { prompt, mode = 'chat', context_code = '', godot_version = '4.x' } = req.body;
+      const { prompt, mode = 'chat', context_code = '', godot_version = '4.x', project_files = [] } = req.body;
 
       if (!prompt) {
         res.status(400).json({ error: 'Prompt is required' });
         return;
       }
 
-      let enhancedPrompt = `User Prompt from Godot ${godot_version} Editor Dock: "${prompt}"\nMode: ${mode}\n`;
+      let enhancedPrompt = `User Prompt from Godot ${godot_version} Editor: "${prompt}"\nMode: ${mode}\n`;
       if (context_code) {
         enhancedPrompt += `\nActive Script in Godot Script Editor:\n\`\`\`gdscript\n${context_code}\n\`\`\`\n`;
       }
+      if (project_files && project_files.length > 0) {
+        enhancedPrompt += `\nProject Files Known in FileSystem (${project_files.length} files scanned):\n${project_files.slice(0, 100).join('\n')}\n`;
+      }
+
+      enhancedPrompt += `
+CRITICAL DIRECTIVE:
+You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IDE EXECUTION PERMISSIONS.
+NEVER say "As an AI I cannot modify files" or "You must do this manually".
+Whenever the user asks to delete files, remove assets, create scripts, modify files, or refactor code, you MUST output an action block using:
+\`\`\`action
+{
+  "actions": [
+    { "type": "delete_matching", "pattern": "Polish" }
+  ]
+}
+\`\`\`
+Supported action commands:
+1. Delete files by pattern/name: { "type": "delete_matching", "pattern": "<name_or_substring>" }
+2. Delete specific file: { "type": "delete_file", "path": "res://Assets/path/file.png" }
+3. Create new script or file: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
+4. Replace current open script: { "type": "replace_active_script", "content": "<gdscript_code>" }
+
+Respond with confirmation of the action and the action JSON block.`;
 
       const ai = getGeminiAI();
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash',
         contents: enhancedPrompt,
         config: {
-          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nYou are responding directly to the Godot Editor Dock plugin. Keep responses concise, with clear code blocks that can be directly inserted into the user's active GDScript editor. Target version: ${godot_version}.`,
-          temperature: 0.3,
+          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nYou are Godot AI Agentic IDE Copilot with real file-modification and code-execution tools. ALWAYS output \`\`\`action blocks for file operations. NEVER state that you cannot access files. Target version: ${godot_version}.`,
+          temperature: 0.1,
         },
       });
 
@@ -143,13 +166,28 @@ async function startServer() {
       // Extract primary code block if present
       let extractedCode = '';
       const codeBlockMatch = text.match(/```(?:gdscript|gdshader|csharp|tscn)?\n([\s\S]*?)```/);
-      if (codeBlockMatch && codeBlockMatch[1]) {
+      if (codeBlockMatch && codeBlockMatch[1] && !codeBlockMatch[0].startsWith('```action')) {
         extractedCode = codeBlockMatch[1].trim();
+      }
+
+      // Extract actions JSON if present
+      let actions: any[] = [];
+      const actionMatch = text.match(/```action\n([\s\S]*?)```/);
+      if (actionMatch && actionMatch[1]) {
+        try {
+          const parsed = JSON.parse(actionMatch[1].trim());
+          if (parsed.actions && Array.isArray(parsed.actions)) {
+            actions = parsed.actions;
+          }
+        } catch (e) {
+          console.warn('Could not parse action block:', e);
+        }
       }
 
       res.json({
         reply: text,
         code: extractedCode,
+        actions: actions,
         mode: mode,
         godot_version: godot_version,
       });
