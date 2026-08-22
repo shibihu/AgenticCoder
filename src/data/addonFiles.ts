@@ -69,7 +69,7 @@ func insert_code_to_active_script(code_to_insert: String, replace_all: bool = fa
 		return true
 	return false
 
-# Inspect open scene hierarchy with rich node properties (position, texture size, class)
+#// Inspect open scene hierarchy with rich node properties (position, texture size, class)
 func get_scene_tree_summary() -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
 	if not root:
@@ -78,18 +78,31 @@ func get_scene_tree_summary() -> Dictionary:
 		"status": "ok",
 		"root_name": root.name,
 		"root_type": root.get_class(),
-		"nodes": _dump_node_tree(root)
+		"nodes": _dump_node_tree(root, root)
 	}
 
-func _dump_node_tree(node: Node) -> Array[Dictionary]:
+func _dump_node_tree(node: Node, scene_root: Node = null) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
+	if not scene_root:
+		scene_root = EditorInterface.get_edited_scene_root()
+	
+	var rel_path := "."
+	if scene_root and scene_root != node:
+		rel_path = str(scene_root.get_path_to(node))
+	
 	var item := {
 		"name": node.name,
 		"type": node.get_class(),
-		"path": str(node.get_path()),
+		"path": rel_path,
+		"raw_path": str(node.get_path()),
 		"script": node.get_script().resource_path if node.get_script() else "",
 		"children_count": node.get_child_count()
 	}
+	
+	if node is CanvasItem:
+		item["visible"] = (node as CanvasItem).visible
+	elif node is Node3D:
+		item["visible"] = (node as Node3D).visible
 	
 	if node is Node2D:
 		item["position"] = [snapped(node.position.x, 0.1), snapped(node.position.y, 0.1)]
@@ -107,25 +120,34 @@ func _dump_node_tree(node: Node) -> Array[Dictionary]:
 	
 	result.append(item)
 	for child in node.get_children():
-		result.append_array(_dump_node_tree(child))
+		result.append_array(_dump_node_tree(child, scene_root))
 	return result
 
 # Get selected node information
 func get_selected_nodes_info() -> Array[Dictionary]:
 	var selection := EditorInterface.get_selection()
 	var selected_nodes := selection.get_selected_nodes()
+	var scene_root := EditorInterface.get_edited_scene_root()
 	var out: Array[Dictionary] = []
 	for n in selected_nodes:
+		var rel_path := n.name
+		if scene_root and scene_root != n:
+			rel_path = str(scene_root.get_path_to(n))
+			
 		var n_info := {
 			"name": n.name,
 			"type": n.get_class(),
-			"path": str(n.get_path()),
+			"path": rel_path,
 			"is_canvas_item": n is CanvasItem,
 			"is_node3d": n is Node3D
 		}
+		if n is CanvasItem:
+			n_info["visible"] = (n as CanvasItem).visible
 		if n is Node2D:
 			n_info["position"] = [n.position.x, n.position.y]
 			n_info["global_position"] = [n.global_position.x, n.global_position.y]
+		elif n is Control:
+			n_info["size"] = [n.size.x, n.size.y]
 		out.append(n_info)
 	return out
 
@@ -154,7 +176,7 @@ func _scan_dir_recursive(path: String, out_files: PackedStringArray, max_files: 
 		file_name = dir.get_next()
 	dir.list_dir_end()
 
-# Helper to reliably find any node in the active scene tree by path, leaf name, or partial match
+# Helper to reliably find any node in the active scene tree by relative path, leaf name, or deep editor path
 func _find_target_node(scene_root: Node, identifier: String) -> Node:
 	if not scene_root or identifier.strip_edges().is_empty():
 		return scene_root
@@ -163,27 +185,47 @@ func _find_target_node(scene_root: Node, identifier: String) -> Node:
 	if clean_id == scene_root.name or clean_id == "/" or clean_id == "." or clean_id == "":
 		return scene_root
 	
-	# 1. Direct NodePath lookup
+	# Clean internal editor paths like /root/@EditorNode.../World/Interaction/Button/TextureRect
+	if "@" in clean_id or "/root/" in clean_id:
+		var root_name := scene_root.name
+		if root_name in clean_id:
+			var idx := clean_id.find("/" + root_name + "/")
+			if idx != -1:
+				clean_id = clean_id.substr(idx + root_name.length() + 2)
+			else:
+				var idx2 := clean_id.find(root_name + "/")
+				if idx2 != -1:
+					clean_id = clean_id.substr(idx2 + root_name.length() + 1)
+	
+	# Trim leading slashes
+	while clean_id.begins_with("/"):
+		clean_id = clean_id.substr(1)
+	
+	if clean_id.is_empty():
+		return scene_root
+	
+	# 1. Direct NodePath relative lookup
 	if scene_root.has_node(NodePath(clean_id)):
 		return scene_root.get_node(NodePath(clean_id))
 	
-	# 2. Try find_child exact
+	# 2. Try find_child exact by clean_id
 	var by_name := scene_root.find_child(clean_id, true, false)
 	if by_name:
 		return by_name
 	
-	# 3. Try matching last component of a path (e.g. "Assets/Storages/Chest" -> "Chest")
+	# 3. Try matching last leaf component (e.g. "Interaction/Button/TextureRect" -> "TextureRect")
 	var leaf_name := clean_id.get_file()
 	if not leaf_name.is_empty():
 		var by_leaf := scene_root.find_child(leaf_name, true, false)
 		if by_leaf:
 			return by_leaf
 	
-	# 4. Search all nodes for partial match or suffix match
-	var all_nodes := _dump_node_tree(scene_root)
+	# 4. Search all nodes for suffix match or partial match
+	var all_nodes := _dump_node_tree(scene_root, scene_root)
 	for n_data in all_nodes:
 		var n_path: String = n_data.get("path", "")
-		if n_path.ends_with(clean_id) or clean_id.to_lower() in n_path.to_lower():
+		var n_name: String = n_data.get("name", "")
+		if n_name.to_lower() == clean_id.to_lower() or n_path.to_lower() == clean_id.to_lower() or n_path.to_lower().ends_with(clean_id.to_lower()):
 			return scene_root.get_node_or_null(NodePath(n_path))
 			
 	return null
@@ -233,7 +275,7 @@ func apply_shader_to_node(shader_code: String, target_node: Node = null, save_pa
 
 # Execute real IDE / File system / Scene tree actions inside Godot
 func execute_agent_action(action: Dictionary) -> Dictionary:
-	var action_type: String = action.get("type", "")
+	var action_type: String = action.get("type", "").to_lower().strip_edges()
 	var res := {"success": false, "message": ""}
 	var scene_root := EditorInterface.get_edited_scene_root()
 	
@@ -241,12 +283,12 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 1. ADVANCED PHYSICS BODY & COLLIDER AUTO-WRAPPER
 		# =========================================================================
-		"wrap_with_body", "attach_collision", "make_collision":
+		"wrap_with_body", "attach_collision", "make_collision", "add_collision", "create_collision":
 			if not scene_root:
 				res.message = "No active scene open in Godot."
 				return res
 			
-			var target_id: String = action.get("target", action.get("node", ""))
+			var target_id: String = action.get("target", action.get("node", action.get("node_path", action.get("path", ""))))
 			var target_node := _find_target_node(scene_root, target_id)
 			if not target_node:
 				res.message = "Target node '" + target_id + "' not found in active scene."
@@ -327,11 +369,11 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 2. SCENE NODE REPARENTING, MODIFICATION, DELETION
 		# =========================================================================
-		"reparent_node":
+		"reparent_node", "reparent", "move_node":
 			if not scene_root:
 				res.message = "No active scene open."
 				return res
-			var node_id: String = action.get("node", "")
+			var node_id: String = action.get("node", action.get("target", ""))
 			var new_parent_id: String = action.get("new_parent", action.get("parent", ""))
 			var target_node := _find_target_node(scene_root, node_id)
 			var new_parent := _find_target_node(scene_root, new_parent_id)
@@ -349,11 +391,11 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			res.success = true
 			res.message = "Reparented '" + target_node.name + "' under '" + new_parent.name + "'"
 
-		"delete_node":
+		"delete_node", "remove_node", "destroy_node":
 			if not scene_root:
 				res.message = "No active scene open."
 				return res
-			var target_id: String = action.get("target", action.get("name", ""))
+			var target_id: String = action.get("target", action.get("name", action.get("node", "")))
 			var target_node := _find_target_node(scene_root, target_id)
 			if not target_node:
 				res.message = "Node '" + target_id + "' not found to delete."
@@ -363,32 +405,62 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			res.success = true
 			res.message = "Deleted node '" + n_name + "' from scene tree."
 
-		"set_node_properties":
+		"set_node_properties", "set_node_property", "set_property", "set_properties", "modify_property", "toggle_visibility", "set_visibility":
 			if not scene_root:
 				res.message = "No active scene open."
 				return res
-			var target_id: String = action.get("target", action.get("node", ""))
+			var target_id: String = action.get("target", action.get("node", action.get("node_path", action.get("path", ""))))
 			var target_node := _find_target_node(scene_root, target_id)
 			if not target_node:
-				res.message = "Node '" + target_id + "' not found."
+				res.message = "Node '" + target_id + "' not found in active scene."
 				return res
-			var props: Dictionary = action.get("properties", {})
+			
+			var props: Dictionary = {}
+			if action.has("properties") and action["properties"] is Dictionary:
+				props = action["properties"]
+			elif action.has("property"):
+				props[str(action["property"])] = action.get("value", null)
+			elif action_type == "toggle_visibility":
+				var cur_vis: bool = true
+				if target_node is CanvasItem: cur_vis = (target_node as CanvasItem).visible
+				elif target_node is Node3D: cur_vis = (target_node as Node3D).visible
+				props["visible"] = not cur_vis
+			
+			var updated_list: Array[String] = []
 			for k in props:
 				var v = props[k]
-				if k == "position" and v is Array and v.size() >= 2:
+				if k == "visible":
+					var b_val := bool(v)
+					if target_node is CanvasItem:
+						(target_node as CanvasItem).visible = b_val
+					elif target_node is Node3D:
+						(target_node as Node3D).visible = b_val
+					else:
+						target_node.set("visible", b_val)
+					updated_list.append("visible = " + str(b_val))
+				elif k == "position" and v is Array and v.size() >= 2:
 					target_node.set("position", Vector2(v[0], v[1]))
+					updated_list.append("position")
 				elif k == "global_position" and v is Array and v.size() >= 2:
 					target_node.set("global_position", Vector2(v[0], v[1]))
+					updated_list.append("global_position")
 				elif k == "scale" and v is Array and v.size() >= 2:
 					target_node.set("scale", Vector2(v[0], v[1]))
+					updated_list.append("scale")
 				elif k == "size" and v is Array and v.size() >= 2:
 					target_node.set("size", Vector2(v[0], v[1]))
+					updated_list.append("size")
+				elif k == "modulate" and v is String:
+					target_node.set("modulate", Color(v))
+					updated_list.append("modulate")
 				else:
 					target_node.set(k, v)
+					updated_list.append(str(k))
+			
 			res.success = true
-			res.message = "Updated properties for '" + target_node.name + "': " + str(props.keys())
+			res.message = "Updated properties on '" + target_node.name + "': " + ", ".join(updated_list)
 
-		"attach_script":
+		"attach_script", "set_script":
 			if not scene_root:
 				res.message = "No active scene open."
 				return res
@@ -422,7 +494,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 3. FILE OPERATIONS
 		# =========================================================================
-		"delete_file":
+		"delete_file", "remove_file":
 			var target_path: String = action.get("path", "")
 			if target_path.is_empty():
 				res.message = "File path cannot be empty"
@@ -443,7 +515,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			else:
 				res.message = "File not found: " + target_path
 		
-		"delete_matching":
+		"delete_matching", "delete_by_pattern":
 			var pattern: String = action.get("pattern", "")
 			if pattern.is_empty():
 				res.message = "Pattern cannot be empty"
@@ -467,7 +539,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			else:
 				res.message = "No files found matching '" + pattern + "'"
 		
-		"move_file":
+		"move_file", "rename_file":
 			var src: String = action.get("from", "")
 			var dst: String = action.get("to", "")
 			if not src.begins_with("res://"): src = "res://" + src
@@ -488,7 +560,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			else:
 				res.message = "Source file not found: " + src
 
-		"create_file":
+		"create_file", "write_file":
 			var file_path: String = action.get("path", "")
 			var content: String = action.get("content", "")
 			if not file_path.begins_with("res://"):
@@ -506,7 +578,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			else:
 				res.message = "Failed to create " + file_path
 
-		"organize_assets":
+		"organize_assets", "sort_assets":
 			var all_files := scan_project_files(500)
 			var moved_count := 0
 			for f in all_files:
@@ -536,7 +608,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 4. SCENE & NODE TREE BUILDER
 		# =========================================================================
-		"add_node":
+		"add_node", "create_node", "new_node", "instantiate_node":
 			var node_type: String = action.get("node_type", "Node2D")
 			var node_name: String = action.get("name", node_type)
 			var parent_name: String = action.get("parent", "")
@@ -563,6 +635,8 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 							new_node.set("position", Vector2(val[0], val[1]))
 						elif prop_k == "size" and val is Array and val.size() >= 2:
 							new_node.set("size", Vector2(val[0], val[1]))
+						elif prop_k == "visible":
+							new_node.set("visible", bool(val))
 						else:
 							new_node.set(prop_k, val)
 					
@@ -581,8 +655,8 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 					return res
 			res.message = "Could not instantiate node class: " + node_type
 
-		"create_collision_shape":
-			var parent_name: String = action.get("parent", "")
+		"create_collision_shape", "add_collision_shape":
+			var parent_name: String = action.get("parent", action.get("target", ""))
 			var shape_type: String = action.get("shape", "rectangle") # rectangle, circle, capsule
 			if not scene_root:
 				res.message = "No active scene open."
@@ -616,7 +690,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 			res.success = true
 			res.message = "Created " + shape_type + " CollisionShape2D under " + parent_node.name
 
-		"create_scene":
+		"create_scene", "new_scene":
 			var scene_path: String = action.get("path", "res://Scenes/NewScene.tscn")
 			var root_type: String = action.get("root_type", "CharacterBody2D")
 			var root_name: String = action.get("name", "Player")
@@ -662,10 +736,10 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 5. SHADER APPLIER
 		# =========================================================================
-		"apply_shader":
+		"apply_shader", "set_shader", "create_shader":
 			var shader_code: String = action.get("shader_code", "")
 			var save_path: String = action.get("save_path", "")
-			var target_id: String = action.get("target", "")
+			var target_id: String = action.get("target", action.get("node", ""))
 			var target_node: Node = null
 			if not target_id.is_empty() and scene_root:
 				target_node = _find_target_node(scene_root, target_id)
@@ -674,7 +748,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 		# =========================================================================
 		# 6. SCRIPT REPLACEMENT & INJECTION
 		# =========================================================================
-		"replace_active_script":
+		"replace_active_script", "replace_script", "update_script":
 			var content: String = action.get("content", "")
 			if insert_code_to_active_script(content, true):
 				res.success = true
