@@ -817,10 +817,12 @@ var http_request: HTTPRequest
 @onready var confirm_details: Label = $VBox/ConfirmPanel/Margin/HBox/VBox/ConfirmDetails
 @onready var accept_action_button: Button = $VBox/ConfirmPanel/Margin/HBox/BtnContainer/AcceptBtn
 @onready var cancel_action_button: Button = $VBox/ConfirmPanel/Margin/HBox/BtnContainer/CancelBtn
+@onready var auto_execute_check: CheckBox = $VBox/InputContainer/ButtonRow/AutoExecuteCheck
 
-var last_generated_code: String = ""
-var last_generated_shader: String = ""
-var pending_actions: Array = []
+var conversation_history: Array[Dictionary] = []
+var continuous_loop_active: bool = false
+var continuous_step_count: int = 0
+const MAX_CONTINUOUS_STEPS: int = 8
 
 func _ready() -> void:
 	http_request = HTTPRequest.new()
@@ -848,13 +850,13 @@ func _ready() -> void:
 	mode_option.add_item("Shader Studio (.gdshader)", 3)
 	mode_option.add_item("Scene & Node Tree Builder", 4)
 	mode_option.add_item("Asset & Project Organizer", 5)
-	mode_option.add_item("Agentic IDE Full Suite", 6)
+	mode_option.add_item("Autonomous Continuous Agent", 6)
 	
 	insert_button.disabled = true
 	copy_button.disabled = true
 	if apply_shader_button: apply_shader_button.disabled = true
 	
-	_append_chat("[b][color=#478cbf]Godot AI Agentic IDE Copilot Pro Ready![/color][/b]\\n• [color=#5cb85c]Interactive Approval[/color]: All actions require your confirmation before touching the project.\\n• [color=#5cb85c]Scene Builder[/color]: Create nodes, add collisions, setup hierarchies.\\n• [color=#e6db74]1-Click Error Fixer[/color]: Click 'Fix Error' to diagnose active script.\\n• [color=#66d9ef]Shader Studio[/color]: Generate & Apply shaders directly onto selected nodes.\\n")
+	_append_chat("[b][color=#478cbf]Godot AI Agentic IDE Copilot Pro Ready![/color][/b]\\n• [color=#5cb85c]Multi-Step Pipeline[/color]: Executes full multi-action task chains seamlessly.\\n• [color=#5cb85c]Interactive Approval[/color]: Review and approve actions before changes occur.\\n• [color=#e6db74]1-Click Error Fixer[/color]: Click 'Fix Error' to diagnose active script.\\n• [color=#66d9ef]Shader Studio[/color]: Generate & Apply shaders directly onto selected nodes.\\n")
 
 func set_editor_plugin(plugin: EditorPlugin) -> void:
 	editor_plugin = plugin
@@ -892,6 +894,11 @@ func _on_send_pressed() -> void:
 	if prompt_text.is_empty():
 		return
 	
+	continuous_loop_active = auto_execute_check.button_pressed if auto_execute_check else false
+	continuous_step_count = 0
+	_send_prompt_to_server(prompt_text, null, false)
+
+func _send_prompt_to_server(prompt_text: String, last_execution_results: Variant = null, is_auto_continue: bool = false) -> void:
 	# Hide previous confirmation panel if active
 	if confirm_panel: confirm_panel.visible = false
 	pending_actions.clear()
@@ -944,6 +951,9 @@ func _on_send_pressed() -> void:
 		"project_files": project_files,
 		"scene_tree": scene_tree_data,
 		"selected_nodes": selected_nodes,
+		"history": conversation_history,
+		"execution_result": last_execution_results,
+		"auto_continue": is_auto_continue,
 		"godot_version": "4.x"
 	}
 	
@@ -953,7 +963,12 @@ func _on_send_pressed() -> void:
 		"User-Agent: GodotEngine/4.x (GodotAICopilotPro)"
 	]
 	
-	_append_chat("\\n[b][color=#5cb85c]> Dev:[/color][/b] " + prompt_text + "\\n")
+	if not is_auto_continue:
+		_append_chat("\\n[b][color=#5cb85c]> Dev:[/color][/b] " + prompt_text + "\\n")
+		conversation_history.append({"role": "user", "content": prompt_text})
+	else:
+		_append_chat("\\n[b][color=#e6db74]🔄 Step " + str(continuous_step_count + 1) + " (Continuing pipeline):[/color][/b] Sending scene state & progress to AI...\\n")
+	
 	status_label.text = "Thinking..."
 	send_button.disabled = true
 	
@@ -962,6 +977,7 @@ func _on_send_pressed() -> void:
 		_append_chat("[color=#d9534f]Failed to initiate HTTP request to " + endpoint + " (Error code: " + str(err) + ")[/color]\\n")
 		status_label.text = "Error connecting"
 		send_button.disabled = false
+		continuous_loop_active = false
 
 func _on_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	send_button.disabled = false
@@ -993,13 +1009,29 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 	var reply: String = data.get("reply", "")
 	var code: String = data.get("code", "")
 	var actions: Array = data.get("actions", [])
+	var has_more_steps: bool = data.get("has_more_steps", false)
+	
+	# Append assistant reply to conversation history
+	conversation_history.append({"role": "assistant", "content": reply})
+	if conversation_history.size() > 12:
+		conversation_history = conversation_history.slice(conversation_history.size() - 12)
 	
 	_append_chat("[b][color=#478cbf]AI Copilot:[/color][/b]\\n" + reply + "\\n")
 	
-	# Handle Interactive Action Confirmation Flow (Rule #4)
+	# Handle Interactive Action Confirmation Flow & Continuous Execution
 	if not actions.is_empty():
 		pending_actions = actions
-		_show_confirmation_panel(actions)
+		if auto_execute_check and auto_execute_check.button_pressed:
+			_append_chat("[b][color=#5cb85c]⚡ Auto-Executing " + str(actions.size()) + " Pipeline Action(s)...[/color][/b]\\n")
+			_execute_pending_actions_pipeline()
+		else:
+			_show_confirmation_panel(actions)
+	else:
+		if continuous_loop_active and has_more_steps and continuous_step_count < MAX_CONTINUOUS_STEPS:
+			continuous_step_count += 1
+			_send_prompt_to_server("Proceed with the next step", null, true)
+		else:
+			continuous_loop_active = false
 	
 	if not code.is_empty():
 		last_generated_code = code
@@ -1038,13 +1070,13 @@ func _show_confirmation_panel(actions: Array) -> void:
 	var summary_text := "\\n".join(summary_lines)
 	
 	if confirm_label:
-		confirm_label.text = "⚡ AI Proposes " + str(actions.size()) + " Action(s) — Approve to Execute:"
+		confirm_label.text = "⚡ AI Proposes " + str(actions.size()) + " Action(s) — Approve to Execute Pipeline:"
 	if confirm_details:
 		confirm_details.text = summary_text
 	if confirm_panel:
 		confirm_panel.visible = true
 	
-	_append_chat("[color=#f0ad4e][b]📋 Action Confirmation Required:[/b]\\n" + summary_text + "\\n[i]Click [b][Accept Action][/b] below or [b][Reject/Cancel][/b][/i][/color]\\n")
+	_append_chat("[color=#f0ad4e][b]📋 Action Confirmation Required (" + str(actions.size()) + " steps):[/b]\\n" + summary_text + "\\n[i]Click [b][Accept Action][/b] to run full sequence or [b][Reject/Cancel][/b][/i][/color]\\n")
 
 func _on_accept_actions_pressed() -> void:
 	if confirm_panel: confirm_panel.visible = false
@@ -1052,16 +1084,50 @@ func _on_accept_actions_pressed() -> void:
 		return
 	
 	_append_chat("[b][color=#5cb85c]🚀 Executing " + str(pending_actions.size()) + " Approved Action(s)...[/color][/b]\\n")
-	if editor_plugin and editor_plugin.has_method("execute_agent_action"):
-		for action in pending_actions:
-			if action is Dictionary:
-				var res: Dictionary = editor_plugin.execute_agent_action(action)
-				if res.get("success", false):
-					_append_chat("[color=#5cb85c]✓ " + res.get("message", "Action completed") + "[/color]\\n")
-				else:
-					_append_chat("[color=#d9534f]✗ " + res.get("message", "Action failed") + "[/color]\\n")
+	_execute_pending_actions_pipeline()
+
+func _execute_pending_actions_pipeline() -> void:
+	if not editor_plugin or not editor_plugin.has_method("execute_agent_action"):
+		_append_chat("[color=#d9534f]Editor plugin bridge is unavailable.[/color]\\n")
+		pending_actions.clear()
+		return
 	
+	var executed_count := 0
+	var failed_count := 0
+	var execution_logs: Array[String] = []
+	var action_results: Array[Dictionary] = []
+	
+	for i in range(pending_actions.size()):
+		var action = pending_actions[i]
+		if action is Dictionary:
+			var res: Dictionary = editor_plugin.execute_agent_action(action)
+			action_results.append(res)
+			var step_num := str(i + 1)
+			if res.get("success", false):
+				executed_count += 1
+				var msg: String = "Step " + step_num + ": " + res.get("message", "Completed")
+				execution_logs.append("✓ " + msg)
+				_append_chat("[color=#5cb85c]✓ " + msg + "[/color]\\n")
+			else:
+				failed_count += 1
+				var msg: String = "Step " + step_num + ": " + res.get("message", "Failed")
+				execution_logs.append("✗ " + msg)
+				_append_chat("[color=#d9534f]✗ " + msg + "[/color]\\n")
+	
+	_append_chat("[b][color=#478cbf]🎉 Pipeline Step Executed: " + str(executed_count) + " completed, " + str(failed_count) + " failed.[/color][/b]\\n")
 	pending_actions.clear()
+	
+	# If continuous loop is active or requested, feed execution results back to AI for next step
+	if continuous_loop_active and continuous_step_count < MAX_CONTINUOUS_STEPS:
+		continuous_step_count += 1
+		status_label.text = "Continuing pipeline..."
+		_append_chat("[color=#66d9ef]⏳ Feeding execution results back to AI Copilot for step " + str(continuous_step_count + 1) + "...[/color]\\n")
+		_send_prompt_to_server("Previous actions executed. Verify current scene state and continue the next steps to finish the task.", action_results, true)
+	else:
+		if continuous_step_count > 0:
+			_append_chat("[b][color=#5cb85c]🌟 All tasks completed in full continuous pipeline![/color][/b]\\n")
+		continuous_step_count = 0
+		continuous_loop_active = false
 
 func _on_cancel_actions_pressed() -> void:
 	if confirm_panel: confirm_panel.visible = false
@@ -1101,11 +1167,14 @@ func _on_clear_pressed() -> void:
 	last_generated_code = ""
 	last_generated_shader = ""
 	pending_actions.clear()
+	conversation_history.clear()
+	continuous_loop_active = false
+	continuous_step_count = 0
 	if confirm_panel: confirm_panel.visible = false
 	insert_button.disabled = true
 	copy_button.disabled = true
 	if apply_shader_button: apply_shader_button.disabled = true
-	_append_chat("[b][color=#478cbf]Godot AI Copilot[/color][/b] chat cleared.\\n")
+	_append_chat("[b][color=#478cbf]Godot AI Copilot[/color][/b] chat and history cleared.\\n")
 
 func _append_chat(bbcode: String) -> void:
 	chat_display.append_text(bbcode)
@@ -1224,6 +1293,11 @@ theme_override_constants/separation = 6
 layout_mode = 2
 button_pressed = true
 text = "Script Context"
+
+[node name="AutoExecuteCheck" type="CheckBox" parent="VBox/InputContainer/ButtonRow"]
+layout_mode = 2
+button_pressed = false
+text = "⚡ Auto-Run Pipeline"
 
 [node name="Spacer" type="Control" parent="VBox/InputContainer/ButtonRow"]
 layout_mode = 2

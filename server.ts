@@ -289,13 +289,16 @@ app.post('/api/godot/prompt', async (req, res) => {
       project_files = [],
       scene_tree = null,
       selected_nodes = [],
+      history = [],
+      execution_result = null,
+      auto_continue = false,
       provider = 'auto',
       model,
       api_key,
       custom_endpoint,
     } = req.body;
 
-    if (!prompt) {
+    if (!prompt && (!history || history.length === 0)) {
       res.status(400).json({ error: 'Prompt is required' });
       return;
     }
@@ -313,26 +316,62 @@ app.post('/api/godot/prompt', async (req, res) => {
     if (project_files && project_files.length > 0) {
       enhancedPrompt += `\nProject Files Known in FileSystem (${project_files.length} files scanned):\n${project_files.slice(0, 100).join('\n')}\n`;
     }
+    if (execution_result) {
+      enhancedPrompt += `\nExecution Results of previous actions in Godot Editor:\n${JSON.stringify(execution_result, null, 2)}\n`;
+      if (auto_continue) {
+        enhancedPrompt += `\nCONTINUOUS TASK EXECUTION: The previous step completed. Please verify the current scene state and proceed with the NEXT step or actions needed to finish the complete task.\n`;
+      }
+    }
 
     enhancedPrompt += `\nCRITICAL INSTRUCTION:
 You are an active Agentic IDE Copilot plugin running inside Godot Editor.
-Whenever the user asks to modify scene nodes, change properties (like visibility, modulate, position, scale), add nodes, wrap objects with colliders, delete files, remove assets, organize folders, create shaders, create scenes, reparent nodes, or refactor code, you MUST output a valid action block:
+Whenever the user asks you to complete tasks (e.g. create whole character/enemies, modify multiple nodes, set properties, attach scripts, delete nodes, create collisions, build scenes), you CAN and SHOULD return multiple sequential actions in the "actions" array so the user can execute the entire pipeline in one go!
+
+Example of multi-action response:
 \`\`\`action
 {
-  "type": "set_node_properties",
-  "target": "Interaction/Button/TextureRect",
-  "properties": {
-    "visible": false
-  }
+  "goal": "Build full interactable Door with Area2D and Collision",
+  "actions": [
+    {
+      "type": "add_node",
+      "node_type": "Area2D",
+      "name": "DoorTrigger",
+      "parent": "World",
+      "description": "Create Area2D interaction zone"
+    },
+    {
+      "type": "create_collision_shape",
+      "parent": "DoorTrigger",
+      "shape": "rectangle",
+      "size": [64, 96],
+      "description": "Attach interaction trigger shape"
+    }
+  ],
+  "needs_next_step": false
 }
 \`\`\`
+
 Always use relative paths (e.g. "Interaction/Button/TextureRect") or node names (e.g. "TextureRect"). NEVER use internal editor paths starting with "/root/@EditorNode".
 Respond with a brief, clear explanation in the user's language (Thai or English), followed by the action block.`;
 
-    const systemInstruction = GODOT_MASTER_SKILL_PROMPT + `\nYou are Godot AI Agentic IDE Copilot Pro with direct in-editor file-modification, scene building, shader applying, and code-execution abilities. Target version: ${godot_version}.`;
+    const systemInstruction = GODOT_MASTER_SKILL_PROMPT + `\nYou are Godot AI Agentic IDE Copilot Pro with direct in-editor multi-step continuous execution, scene building, shader applying, and script-refactoring abilities. Target version: ${godot_version}.`;
+
+    // Construct conversation messages including past turns if provided
+    const messages: Array<{ role: 'user' | 'assistant' | 'model'; content: string }> = [];
+    if (Array.isArray(history) && history.length > 0) {
+      for (const h of history) {
+        if (h && h.role && h.content) {
+          messages.push({
+            role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
+            content: h.content,
+          });
+        }
+      }
+    }
+    messages.push({ role: 'user', content: enhancedPrompt });
 
     const aiResult = await generateAIResponse({
-      messages: [{ role: 'user', content: enhancedPrompt }],
+      messages,
       systemInstruction,
       provider,
       model,
@@ -354,10 +393,16 @@ Respond with a brief, clear explanation in the user's language (Thai or English)
     // Extract actions using robust multi-pattern extractor
     const actions = extractActionsFromText(text);
 
+    let hasMoreSteps = false;
+    if (text.includes('"needs_next_step": true') || text.includes('"auto_continue": true') || text.includes('"has_more_steps": true')) {
+      hasMoreSteps = true;
+    }
+
     res.json({
       reply: text,
       code: extractedCode,
       actions: actions,
+      has_more_steps: hasMoreSteps,
       mode: mode,
       godot_version: godot_version,
       providerUsed: aiResult.providerUsed,
