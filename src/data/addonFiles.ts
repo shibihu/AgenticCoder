@@ -492,13 +492,26 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 				res.message = "Script not found at: " + script_path
 
 		# =========================================================================
-		# 3. FILE OPERATIONS
+		# 3. FILE OPERATIONS (WITH SAFETY GUARD FOR SCENE NODES)
 		# =========================================================================
 		"delete_file", "remove_file":
-			var target_path: String = action.get("path", "")
+			var target_path: String = action.get("path", action.get("target", ""))
 			if target_path.is_empty():
 				res.message = "File path cannot be empty"
 				return res
+			
+			# Safety Guard: If user/AI gave a node name in active scene (e.g. "Door/Sprite2D" or "Sprite2D") without a file extension
+			if not target_path.begins_with("res://") and not ("." in target_path.get_file()):
+				if scene_root:
+					var matched_node := _find_target_node(scene_root, target_path)
+					if matched_node and matched_node != scene_root:
+						var n_name := matched_node.name
+						matched_node.get_parent().remove_child(matched_node)
+						matched_node.queue_free()
+						res.success = true
+						res.message = "Safety Guard: Detected Node '" + n_name + "' (auto-converted to delete_node from scene)."
+						return res
+
 			if not target_path.begins_with("res://"):
 				target_path = "res://" + target_path
 			
@@ -516,10 +529,22 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
 				res.message = "File not found: " + target_path
 		
 		"delete_matching", "delete_by_pattern":
-			var pattern: String = action.get("pattern", "")
+			var pattern: String = action.get("pattern", action.get("target", ""))
 			if pattern.is_empty():
 				res.message = "Pattern cannot be empty"
 				return res
+
+			# Safety Guard: If pattern matches a node in the open scene (e.g. "Door/Sprite2D")
+			if not ("." in pattern.get_file()) and scene_root:
+				var matched_node := _find_target_node(scene_root, pattern)
+				if matched_node and matched_node != scene_root:
+					var n_name := matched_node.name
+					matched_node.get_parent().remove_child(matched_node)
+					matched_node.queue_free()
+					res.success = true
+					res.message = "Safety Guard: Detected Node '" + n_name + "' (auto-converted to delete_node from scene)."
+					return res
+
 			var all_files := scan_project_files(500)
 			var deleted_count := 0
 			var deleted_names: Array[String] = []
@@ -766,7 +791,7 @@ func execute_agent_action(action: Dictionary) -> Dictionary:
     path: 'addons/godot_ai_copilot/dock.gd',
     filename: 'dock.gd',
     language: 'gdscript',
-    description: 'Dock UI Controller with Agentic Scene Builder, 1-Click Error Fixer, Shader Applier, Asset Organizer, and Script Injection.',
+    description: 'Dock UI Controller with Interactive Action Approval Dialog, Scene Builder, 1-Click Error Fixer, and Shader Applier.',
     content: `@tool
 extends Control
 
@@ -786,8 +811,16 @@ var http_request: HTTPRequest
 @onready var chat_display: RichTextLabel = $VBox/ChatDisplay
 @onready var status_label: Label = $VBox/Header/StatusLabel
 
+# Interactive Action Confirmation Panel Controls
+@onready var confirm_panel: PanelContainer = $VBox/ConfirmPanel
+@onready var confirm_label: Label = $VBox/ConfirmPanel/Margin/HBox/VBox/ConfirmTitle
+@onready var confirm_details: Label = $VBox/ConfirmPanel/Margin/HBox/VBox/ConfirmDetails
+@onready var accept_action_button: Button = $VBox/ConfirmPanel/Margin/HBox/BtnContainer/AcceptBtn
+@onready var cancel_action_button: Button = $VBox/ConfirmPanel/Margin/HBox/BtnContainer/CancelBtn
+
 var last_generated_code: String = ""
 var last_generated_shader: String = ""
+var pending_actions: Array = []
 
 func _ready() -> void:
 	http_request = HTTPRequest.new()
@@ -800,6 +833,12 @@ func _ready() -> void:
 	insert_button.pressed.connect(_on_insert_pressed)
 	copy_button.pressed.connect(_on_copy_pressed)
 	clear_button.pressed.connect(_on_clear_pressed)
+	
+	if accept_action_button: accept_action_button.pressed.connect(_on_accept_actions_pressed)
+	if cancel_action_button: cancel_action_button.pressed.connect(_on_cancel_actions_pressed)
+	
+	if confirm_panel:
+		confirm_panel.visible = false
 	
 	# Populate modes
 	mode_option.clear()
@@ -815,7 +854,7 @@ func _ready() -> void:
 	copy_button.disabled = true
 	if apply_shader_button: apply_shader_button.disabled = true
 	
-	_append_chat("[b][color=#478cbf]Godot AI Agentic IDE Copilot Pro Ready![/color][/b]\\n• [color=#5cb85c]Scene Builder[/color]: Create nodes, add collisions, setup hierarchies.\\n• [color=#e6db74]1-Click Error Fixer[/color]: Click 'Fix Error' to diagnose active script.\\n• [color=#66d9ef]Shader Studio[/color]: Generate & Apply shaders directly onto selected nodes.\\n• [color=#fd971f]Asset Organizer[/color]: Batch sort textures, audio, shaders into structured folders.\\n")
+	_append_chat("[b][color=#478cbf]Godot AI Agentic IDE Copilot Pro Ready![/color][/b]\\n• [color=#5cb85c]Interactive Approval[/color]: All actions require your confirmation before touching the project.\\n• [color=#5cb85c]Scene Builder[/color]: Create nodes, add collisions, setup hierarchies.\\n• [color=#e6db74]1-Click Error Fixer[/color]: Click 'Fix Error' to diagnose active script.\\n• [color=#66d9ef]Shader Studio[/color]: Generate & Apply shaders directly onto selected nodes.\\n")
 
 func set_editor_plugin(plugin: EditorPlugin) -> void:
 	editor_plugin = plugin
@@ -853,22 +892,19 @@ func _on_send_pressed() -> void:
 	if prompt_text.is_empty():
 		return
 	
+	# Hide previous confirmation panel if active
+	if confirm_panel: confirm_panel.visible = false
+	pending_actions.clear()
+	
 	var server_url := server_url_edit.text.strip_edges()
 	if server_url.is_empty():
 		server_url = "http://localhost:3000"
 	
-	# Clean up any accidental spaces or newlines from mobile keyboards
 	server_url = server_url.replace(" ", "").replace("\\t", "").replace("\\n", "").replace("\\r", "")
-	
-	# Prepend https:// if protocol is missing and not localhost
 	if not server_url.begins_with("http://") and not server_url.begins_with("https://"):
 		server_url = "https://" + server_url
-	
-	# Strip trailing slash if present
 	while server_url.ends_with("/"):
 		server_url = server_url.left(server_url.length() - 1)
-	
-	# Avoid duplicate /api/godot/prompt if user pasted full path
 	if server_url.ends_with("/api/godot/prompt"):
 		server_url = server_url.left(server_url.length() - 17)
 	
@@ -938,9 +974,9 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 		if response_code == 0 or result == HTTPRequest.RESULT_CANT_CONNECT:
 			_append_chat("[color=#d9534f][b]Connection Failed (HTTP 0):[/b][/color]\\n")
 			if "localhost" in server_url or "127.0.0.1" in server_url:
-				_append_chat("[color=#f0ad4e]• You are targeting [b]" + server_url + "[/b], but the AI server is hosted on the cloud.\\n• Replace the Server URL top-right box with your hosted Cloud Run URL (e.g. [b]https://ais-dev-...run.app[/b]) and try again![/color]\\n")
+				_append_chat("[color=#f0ad4e]• You are targeting [b]" + server_url + "[/b], but the AI server is hosted on the cloud.\\n• Replace the Server URL top-right box with your hosted Cloud Run URL and try again![/color]\\n")
 			else:
-				_append_chat("[color=#f0ad4e]• Could not reach " + server_url + ". Check your internet connection and verify the URL is accessible in a browser.[/color]\\n")
+				_append_chat("[color=#f0ad4e]• Could not reach " + server_url + ". Check your internet connection.[/color]\\n")
 			return
 		
 		_append_chat("[color=#d9534f]Server returned HTTP " + str(response_code) + (": " + err_text if not err_text.is_empty() else "") + "[/color]\\n")
@@ -960,16 +996,10 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 	
 	_append_chat("[b][color=#478cbf]AI Copilot:[/color][/b]\\n" + reply + "\\n")
 	
-	# Execute IDE Agent Actions automatically in Godot Editor
-	if not actions.is_empty() and editor_plugin and editor_plugin.has_method("execute_agent_action"):
-		_append_chat("[b][color=#f0ad4e]⚡ Executing " + str(actions.size()) + " Agentic IDE Action(s)...[/color][/b]\\n")
-		for action in actions:
-			if action is Dictionary:
-				var res: Dictionary = editor_plugin.execute_agent_action(action)
-				if res.get("success", false):
-					_append_chat("[color=#5cb85c]✓ " + res.get("message", "Action completed") + "[/color]\\n")
-				else:
-					_append_chat("[color=#d9534f]✗ " + res.get("message", "Action failed") + "[/color]\\n")
+	# Handle Interactive Action Confirmation Flow (Rule #4)
+	if not actions.is_empty():
+		pending_actions = actions
+		_show_confirmation_panel(actions)
 	
 	if not code.is_empty():
 		last_generated_code = code
@@ -980,7 +1010,6 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 			if apply_shader_button: apply_shader_button.disabled = false
 		_append_chat("[color=#e6db74]─── Generated Code Attached ───[/color]\\n")
 	else:
-		# Extract code from markdown backticks if any
 		var extracted := _extract_code_from_markdown(reply)
 		if not extracted.is_empty():
 			last_generated_code = extracted
@@ -989,6 +1018,55 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 			if "shader_type" in extracted:
 				last_generated_shader = extracted
 				if apply_shader_button: apply_shader_button.disabled = false
+
+func _show_confirmation_panel(actions: Array) -> void:
+	var summary_lines: Array[String] = []
+	for i in range(actions.size()):
+		var act = actions[i]
+		if act is Dictionary:
+			var act_type: String = act.get("type", "unknown")
+			var desc: String = act.get("description", "")
+			var target: String = act.get("target", act.get("node", act.get("path", "")))
+			
+			var line := str(i + 1) + ". [" + act_type + "]"
+			if not target.is_empty():
+				line += " on '" + target + "'"
+			if not desc.is_empty():
+				line += " (" + desc + ")"
+			summary_lines.append(line)
+	
+	var summary_text := "\\n".join(summary_lines)
+	
+	if confirm_label:
+		confirm_label.text = "⚡ AI Proposes " + str(actions.size()) + " Action(s) — Approve to Execute:"
+	if confirm_details:
+		confirm_details.text = summary_text
+	if confirm_panel:
+		confirm_panel.visible = true
+	
+	_append_chat("[color=#f0ad4e][b]📋 Action Confirmation Required:[/b]\\n" + summary_text + "\\n[i]Click [b][Accept Action][/b] below or [b][Reject/Cancel][/b][/i][/color]\\n")
+
+func _on_accept_actions_pressed() -> void:
+	if confirm_panel: confirm_panel.visible = false
+	if pending_actions.is_empty():
+		return
+	
+	_append_chat("[b][color=#5cb85c]🚀 Executing " + str(pending_actions.size()) + " Approved Action(s)...[/color][/b]\\n")
+	if editor_plugin and editor_plugin.has_method("execute_agent_action"):
+		for action in pending_actions:
+			if action is Dictionary:
+				var res: Dictionary = editor_plugin.execute_agent_action(action)
+				if res.get("success", false):
+					_append_chat("[color=#5cb85c]✓ " + res.get("message", "Action completed") + "[/color]\\n")
+				else:
+					_append_chat("[color=#d9534f]✗ " + res.get("message", "Action failed") + "[/color]\\n")
+	
+	pending_actions.clear()
+
+func _on_cancel_actions_pressed() -> void:
+	if confirm_panel: confirm_panel.visible = false
+	pending_actions.clear()
+	_append_chat("[color=#d9534f]⛔ Action proposal rejected by user. No changes were made.[/color]\\n")
 
 func _extract_code_from_markdown(md_text: String) -> String:
 	var start_idx := md_text.find("\`\`\`")
@@ -1022,6 +1100,8 @@ func _on_clear_pressed() -> void:
 	prompt_edit.text = ""
 	last_generated_code = ""
 	last_generated_shader = ""
+	pending_actions.clear()
+	if confirm_panel: confirm_panel.visible = false
 	insert_button.disabled = true
 	copy_button.disabled = true
 	if apply_shader_button: apply_shader_button.disabled = true
@@ -1035,7 +1115,7 @@ func _append_chat(bbcode: String) -> void:
     path: 'addons/godot_ai_copilot/dock.tscn',
     filename: 'dock.tscn',
     language: 'scene',
-    description: 'Godot 4 UI scene file with layout containers, 1-click debug buttons, shader applier, and prompt editors.',
+    description: 'Godot 4 UI scene file with layout containers, 1-click debug buttons, shader applier, prompt editors, and Interactive Approval Panel.',
     content: `[gd_scene load_steps=2 format=3 uid="uid://c6j27k8x5nql4"]
 
 [ext_resource type="Script" path="res://addons/godot_ai_copilot/dock.gd" id="1_dock"]
@@ -1083,6 +1163,49 @@ size_flags_vertical = 3
 bbcode_enabled = true
 scroll_following = true
 
+[node name="ConfirmPanel" type="PanelContainer" parent="VBox"]
+visible = false
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="VBox/ConfirmPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="HBox" type="HBoxContainer" parent="VBox/ConfirmPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="VBox" type="VBoxContainer" parent="VBox/ConfirmPanel/Margin/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ConfirmTitle" type="Label" parent="VBox/ConfirmPanel/Margin/HBox/VBox"]
+layout_mode = 2
+text = "⚡ Action Proposal:"
+text_overrun_behavior = 3
+
+[node name="ConfirmDetails" type="Label" parent="VBox/ConfirmPanel/Margin/HBox/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.8, 1)
+text = "Action details..."
+autowrap_mode = 2
+
+[node name="BtnContainer" type="HBoxContainer" parent="VBox/ConfirmPanel/Margin/HBox"]
+layout_mode = 2
+alignment = 2
+theme_override_constants/separation = 8
+
+[node name="AcceptBtn" type="Button" parent="VBox/ConfirmPanel/Margin/HBox/BtnContainer"]
+layout_mode = 2
+text = "✅ Accept Action"
+
+[node name="CancelBtn" type="Button" parent="VBox/ConfirmPanel/Margin/HBox/BtnContainer"]
+layout_mode = 2
+text = "❌ Reject / Cancel"
+
 [node name="InputContainer" type="VBoxContainer" parent="VBox"]
 layout_mode = 2
 theme_override_constants/separation = 4
@@ -1090,7 +1213,7 @@ theme_override_constants/separation = 4
 [node name="PromptEdit" type="TextEdit" parent="VBox/InputContainer"]
 custom_minimum_size = Vector2(0, 65)
 layout_mode = 2
-placeholder_text = "Ask AI (e.g. 'Add CharacterBody2D Player with CollisionShape2D', 'Fix active script', 'Stylized 2D water shader')..."
+placeholder_text = "Ask AI (e.g. 'Remove Door/Sprite2D in scene', 'Add CharacterBody2D Player', 'Fix script')..."
 wrap_mode = 1
 
 [node name="ButtonRow" type="HBoxContainer" parent="VBox/InputContainer"]
