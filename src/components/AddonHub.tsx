@@ -263,6 +263,25 @@ export const AddonHub: React.FC<AddonHubProps> = ({
               Test how the in-editor Godot Dock communicates with this AI backend via HTTPClient / HTTPRequest:
             </p>
 
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <span className="text-[11px] text-zinc-400 self-center mr-1">Quick Features:</span>
+              {[
+                { label: '🏗️ Scene Builder', prompt: 'Add CharacterBody2D Player with CollisionShape2D under root' },
+                { label: '🤖 Fix Error', prompt: 'Analyze and fix KinematicBody2D move_and_slide error in active script' },
+                { label: '🎨 Apply Shader', prompt: 'Create stylized 2D water shader and apply to selected sprite' },
+                { label: '🗂️ Organize Assets', prompt: 'Organize all project assets into Textures, Audio, Shaders, Scripts folders' },
+                { label: '🧩 Multi-Script Context', prompt: 'Create InventoryManager.gd and ItemData.gd with signals and custom resource' },
+              ].map((item, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setTestPrompt(item.prompt)}
+                  className="px-2 py-1 rounded bg-zinc-800 hover:bg-cyan-900/60 hover:text-cyan-300 border border-zinc-700/80 text-[11px] text-zinc-300 transition-colors"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
             <div className="flex items-center gap-2">
               <input
                 type="text"

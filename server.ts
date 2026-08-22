@@ -116,7 +116,15 @@ async function startServer() {
   // This is called by the in-editor Godot Dock (addons/godot_ai_copilot/dock.gd)
   app.post('/api/godot/prompt', async (req, res) => {
     try {
-      const { prompt, mode = 'chat', context_code = '', godot_version = '4.x', project_files = [] } = req.body;
+      const {
+        prompt,
+        mode = 'chat',
+        context_code = '',
+        godot_version = '4.x',
+        project_files = [],
+        scene_tree = null,
+        selected_nodes = [],
+      } = req.body;
 
       if (!prompt) {
         res.status(400).json({ error: 'Prompt is required' });
@@ -127,27 +135,49 @@ async function startServer() {
       if (context_code) {
         enhancedPrompt += `\nActive Script in Godot Script Editor:\n\`\`\`gdscript\n${context_code}\n\`\`\`\n`;
       }
+      if (scene_tree && scene_tree.nodes && scene_tree.nodes.length > 0) {
+        enhancedPrompt += `\nCurrent Edited Scene Hierarchy (Root: ${scene_tree.root_name} [${scene_tree.root_type}]):\n${JSON.stringify(scene_tree.nodes, null, 2)}\n`;
+      }
+      if (selected_nodes && selected_nodes.length > 0) {
+        enhancedPrompt += `\nSelected Nodes in 2D/3D Viewport:\n${JSON.stringify(selected_nodes, null, 2)}\n`;
+      }
       if (project_files && project_files.length > 0) {
         enhancedPrompt += `\nProject Files Known in FileSystem (${project_files.length} files scanned):\n${project_files.slice(0, 100).join('\n')}\n`;
       }
 
       enhancedPrompt += `
 CRITICAL DIRECTIVE:
-You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IDE EXECUTION PERMISSIONS.
+You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IN-EDITOR SCENE EXECUTION PERMISSIONS.
 NEVER say "As an AI I cannot modify files" or "You must do this manually".
-Whenever the user asks to delete files, remove assets, create scripts, modify files, or refactor code, you MUST output an action block using:
+Whenever the user asks to add nodes, delete files, remove assets, organize folders, create shaders, create scenes, or refactor code, you MUST output an action block using:
 \`\`\`action
 {
   "actions": [
-    { "type": "delete_matching", "pattern": "Polish" }
+    { "type": "add_node", "node_type": "CharacterBody2D", "name": "Player", "parent": "", "add_collision_shape": true },
+    { "type": "delete_matching", "pattern": "Polish" },
+    { "type": "apply_shader", "shader_code": "shader_type canvas_item; ...", "save_path": "res://Shaders/water.gdshader" }
   ]
 }
 \`\`\`
+
 Supported action commands:
-1. Delete files by pattern/name: { "type": "delete_matching", "pattern": "<name_or_substring>" }
-2. Delete specific file: { "type": "delete_file", "path": "res://Assets/path/file.png" }
-3. Create new script or file: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
-4. Replace current open script: { "type": "replace_active_script", "content": "<gdscript_code>" }
+1. SCENE & NODES:
+   - Add Node: { "type": "add_node", "node_type": "CharacterBody2D|Sprite2D|Area2D|Camera2D|PointLight2D|MeshInstance3D", "name": "NodeName", "parent": "ParentNodeName", "properties": {"position": [100, 200]}, "add_collision_shape": true }
+   - Collision Shape: { "type": "create_collision_shape", "parent": "Player", "shape": "rectangle|circle|capsule" }
+   - New Scene: { "type": "create_scene", "path": "res://Scenes/Level1.tscn", "root_type": "Node2D|Node3D|CharacterBody2D", "name": "Level1" }
+
+2. FILES & ASSETS:
+   - Delete Matching: { "type": "delete_matching", "pattern": "<name_or_substring>" }
+   - Delete Specific: { "type": "delete_file", "path": "res://Assets/path/file.png" }
+   - Move/Rename: { "type": "move_file", "from": "res://file.png", "to": "res://Assets/Textures/file.png" }
+   - Create Script/File: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
+   - Auto Organize Assets: { "type": "organize_assets" }
+
+3. SHADERS:
+   - Apply Shader: { "type": "apply_shader", "shader_code": "<shader_code>", "save_path": "res://Shaders/my_shader.gdshader" }
+
+4. SCRIPTS:
+   - Replace Current Active Script: { "type": "replace_active_script", "content": "<gdscript_code>" }
 
 Respond with confirmation of the action and the action JSON block.`;
 
@@ -156,7 +186,7 @@ Respond with confirmation of the action and the action JSON block.`;
         model: 'gemini-2.5-flash',
         contents: enhancedPrompt,
         config: {
-          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nYou are Godot AI Agentic IDE Copilot with real file-modification and code-execution tools. ALWAYS output \`\`\`action blocks for file operations. NEVER state that you cannot access files. Target version: ${godot_version}.`,
+          systemInstruction: GODOT_SYSTEM_INSTRUCTION + `\nYou are Godot AI Agentic IDE Copilot Pro with real file-modification, scene building, shader applying, and code-execution tools. ALWAYS output \`\`\`action blocks for IDE operations. NEVER state that you cannot access files. Target version: ${godot_version}.`,
           temperature: 0.1,
         },
       });

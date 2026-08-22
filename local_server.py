@@ -75,36 +75,58 @@ def handle_godot_prompt() -> Any:
     """
     data: Dict[str, Any] = request.get_json(silent=True) or {}
     prompt = data.get("prompt", "").strip()
+    mode = data.get("mode", "chat")
     godot_version = data.get("godot_version", "4.x")
-    current_code = data.get("current_code", "")
+    current_code = data.get("context_code", "") or data.get("current_code", "")
     project_files = data.get("project_files", [])
+    scene_tree = data.get("scene_tree", {})
+    selected_nodes = data.get("selected_nodes", [])
 
     if not prompt:
         return jsonify({"error": "Prompt cannot be empty"}), 400
 
-    user_content = f"Godot Target Version: {godot_version}\n\nUser Prompt: {prompt}"
+    user_content = f"Godot Target Version: {godot_version}\nMode: {mode}\nUser Prompt: {prompt}"
     if current_code:
         user_content += f"\n\nActive Script Context in Godot Editor:\n```gdscript\n{current_code}\n```"
+    if scene_tree and scene_tree.get("nodes"):
+        user_content += f"\nCurrent Scene Tree: Root {scene_tree.get('root_name')} ({scene_tree.get('root_type')})\n"
+    if selected_nodes:
+        user_content += f"\nSelected Nodes: {selected_nodes}\n"
     if project_files:
         user_content += f"\n\nKnown Project Files in Godot:\n" + "\n".join(project_files[:100])
 
     user_content += """\n
 CRITICAL DIRECTIVE:
-You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IDE EXECUTION PERMISSIONS.
+You are an active Agentic IDE Copilot plugin running inside Godot Editor with FULL FILE SYSTEM & IN-EDITOR SCENE EXECUTION PERMISSIONS.
 NEVER say "As an AI I cannot modify files" or "You must do this manually".
-Whenever the user asks to delete files, remove assets, create scripts, modify files, or refactor code, you MUST output an action block using:
+Whenever the user asks to add nodes, delete files, remove assets, organize folders, create shaders, create scenes, or refactor code, you MUST output an action block using:
 ```action
 {
   "actions": [
-    { "type": "delete_matching", "pattern": "Polish" }
+    { "type": "add_node", "node_type": "CharacterBody2D", "name": "Player", "parent": "", "add_collision_shape": true },
+    { "type": "delete_matching", "pattern": "Polish" },
+    { "type": "apply_shader", "shader_code": "shader_type canvas_item; ...", "save_path": "res://Shaders/water.gdshader" }
   ]
 }
 ```
 Supported action commands:
-1. Delete files by pattern/name: { "type": "delete_matching", "pattern": "<name_or_substring>" }
-2. Delete specific file: { "type": "delete_file", "path": "res://Assets/path/file.png" }
-3. Create new script or file: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
-4. Replace current open script: { "type": "replace_active_script", "content": "<gdscript_code>" }
+1. SCENE & NODES:
+   - Add Node: { "type": "add_node", "node_type": "CharacterBody2D|Sprite2D|Area2D|Camera2D|PointLight2D|MeshInstance3D", "name": "NodeName", "parent": "ParentNodeName", "properties": {"position": [100, 200]}, "add_collision_shape": true }
+   - Collision Shape: { "type": "create_collision_shape", "parent": "Player", "shape": "rectangle|circle|capsule" }
+   - New Scene: { "type": "create_scene", "path": "res://Scenes/Level1.tscn", "root_type": "Node2D|Node3D|CharacterBody2D", "name": "Level1" }
+
+2. FILES & ASSETS:
+   - Delete Matching: { "type": "delete_matching", "pattern": "<name_or_substring>" }
+   - Delete Specific: { "type": "delete_file", "path": "res://Assets/path/file.png" }
+   - Move/Rename: { "type": "move_file", "from": "res://file.png", "to": "res://Assets/Textures/file.png" }
+   - Create Script/File: { "type": "create_file", "path": "res://scripts/filename.gd", "content": "<gdscript_code>" }
+   - Auto Organize Assets: { "type": "organize_assets" }
+
+3. SHADERS:
+   - Apply Shader: { "type": "apply_shader", "shader_code": "<shader_code>", "save_path": "res://Shaders/my_shader.gdshader" }
+
+4. SCRIPTS:
+   - Replace Current Active Script: { "type": "replace_active_script", "content": "<gdscript_code>" }
 
 Respond with confirmation of the action and the action JSON block."""
 
